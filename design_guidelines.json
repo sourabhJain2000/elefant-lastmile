@@ -1,0 +1,96 @@
+{
+  "theme": "light",
+  "archetype": "Archetype 4: Swiss & High-Contrast",
+  "design_concept": "Logistics Control Tower. A dense, high-contrast, data-driven dashboard optimized for rapid scanning and operational planning. Uses sharp corners, distinct functional colors, and structured grids to establish authority and clarity.",
+  "colors": {
+    "background": "bg-zinc-50",
+    "surface": "bg-white",
+    "primary": "#0F172A",
+    "secondary": "#334155",
+    "orders_theme": {
+      "bg": "bg-blue-50",
+      "text": "text-blue-700",
+      "border": "border-blue-200",
+      "accent": "bg-blue-600"
+    },
+    "returns_theme": {
+      "bg": "bg-amber-50",
+      "text": "text-amber-700",
+      "border": "border-amber-200",
+      "accent": "bg-amber-600"
+    },
+    "success": "#059669",
+    "error": "#DC2626",
+    "border": "border-zinc-200",
+    "text_main": "text-zinc-900",
+    "text_muted": "text-zinc-500"
+  },
+  "typography": {
+    "heading_font": "Cabinet Grotesk",
+    "body_font": "IBM Plex Sans",
+    "mono_font": "JetBrains Mono",
+    "h1": "text-2xl sm:text-3xl font-bold tracking-tight text-zinc-900",
+    "h2": "text-lg sm:text-xl font-semibold tracking-tight text-zinc-900",
+    "h3": "text-base sm:text-lg font-medium text-zinc-900",
+    "body": "text-sm text-zinc-700",
+    "small_label": "text-xs font-semibold tracking-[0.05em] uppercase text-zinc-500",
+    "data_number": "font-mono text-sm tracking-tight text-zinc-900"
+  },
+  "layout_and_spacing": {
+    "container": "max-w-[1600px] mx-auto px-4 sm:px-6 py-6 sm:py-8",
+    "dashboard_grid": "grid grid-cols-1 xl:grid-cols-12 gap-6",
+    "sidebar_span": "xl:col-span-2 flex flex-col gap-2",
+    "main_content_span": "xl:col-span-10 flex flex-col gap-6",
+    "kpi_grid": "grid grid-cols-1 sm:grid-cols-3 gap-4",
+    "surface_style": "bg-white border border-zinc-200 rounded-sm shadow-sm",
+    "table_container": "w-full overflow-x-auto border border-zinc-200 rounded-sm bg-white"
+  },
+  "components": {
+    "button": {
+      "primary": "inline-flex items-center justify-center gap-2 bg-zinc-900 text-white hover:bg-zinc-800 rounded-sm px-4 py-2 text-sm font-medium transition-colors shadow-sm",
+      "outline": "inline-flex items-center justify-center gap-2 bg-white border border-zinc-300 text-zinc-700 hover:bg-zinc-50 rounded-sm px-4 py-2 text-sm font-medium transition-colors shadow-sm",
+      "download": "inline-flex items-center justify-center gap-2 bg-emerald-50 border border-emerald-200 text-emerald-700 hover:bg-emerald-100 rounded-sm px-4 py-2 text-sm font-medium transition-colors"
+    },
+    "badge": {
+      "base": "inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-medium border",
+      "fully_serviceable": "bg-emerald-50 text-emerald-700 border-emerald-200",
+      "partially_serviceable": "bg-amber-50 text-amber-700 border-amber-200",
+      "status_default": "bg-zinc-100 text-zinc-700 border-zinc-200"
+    },
+    "table": {
+      "header": "bg-zinc-50 border-b border-zinc-200",
+      "header_cell": "px-4 py-3 text-left text-xs font-semibold text-zinc-600 uppercase tracking-wider",
+      "body_row": "hover:bg-zinc-50 transition-colors border-b border-zinc-100 last:border-0",
+      "body_cell": "px-4 py-3 text-sm text-zinc-700 whitespace-nowrap",
+      "mono_cell": "px-4 py-3 text-sm font-mono text-zinc-900 whitespace-nowrap"
+    },
+    "kpi_card": {
+      "wrapper": "bg-white border border-zinc-200 rounded-sm p-5 flex flex-col gap-2 shadow-sm relative overflow-hidden",
+      "label": "text-xs font-semibold text-zinc-500 uppercase tracking-widest",
+      "value": "text-3xl sm:text-4xl font-semibold text-zinc-900 font-mono tracking-tighter"
+    },
+    "hub_navigation": {
+      "vertical_list": "flex flex-row xl:flex-col gap-1 overflow-x-auto xl:overflow-visible pb-2 xl:pb-0",
+      "vertical_trigger": "px-4 py-3 text-left text-sm font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 rounded-sm data-[state=active]:bg-zinc-100 data-[state=active]:text-zinc-900 data-[state=active]:border-l-4 data-[state=active]:border-zinc-900 border-l-4 border-transparent transition-all whitespace-nowrap flex-shrink-0 xl:flex-shrink-auto flex justify-between items-center"
+    }
+  },
+  "motion_and_interactions": {
+    "hover": "transition-all duration-200 ease-in-out",
+    "active": "active:scale-[0.98]",
+    "focus": "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
+  },
+  "icons_library": "@phosphor-icons/react",
+  "instructions_to_main_agent": [
+    "Install required fonts from Google Fonts: Cabinet Grotesk, IBM Plex Sans, and JetBrains Mono.",
+    "Install @phosphor-icons/react. Use Duotone or Bold weights for clear visibility in dense interfaces.",
+    "Use pure HTML/Tailwind for the main layout grid (bento/control tower style).",
+    "Use Shadcn components for Select, Popover (Datepicker), Dialog, Tabs, Table.",
+    "MANDATORY: Override Shadcn default rounded-md to rounded-sm (2px border radius) across all components for a sharper, more technical aesthetic.",
+    "Structure: Top Header (Logo + Sync Button + Last Synced Text). Below it, Date Picker + Helper Text. Then KPI cards. Then a 12-column grid where col-span-2 is a vertical list of Hubs (Hub Navigation) and col-span-10 is the content for the selected Hub.",
+    "Inside Hub Content: Display an 'Orders' section (with subtle blue accents/icons) and a 'Returns' section (with subtle amber accents/icons). Each section has its own table.",
+    "Use font-mono for Order IDs, Pincodes, and numerical data in tables.",
+    "Include 'data-testid' on all interactive elements (buttons, tabs, date picker, rows).",
+    "Data table must handle horizontal overflow gracefully (`overflow-x-auto`).",
+    "Add a 'Download All Hubs' button at the top level, and a 'Download Hub' button inside the specific hub view."
+  ]
+}
