@@ -1,0 +1,27 @@
+{
+  "summary": "End-to-end testing of Last Mile Planner (FastAPI + React + MongoDB). 8/8 pytest backend tests passed (sync status, full sync ~14s, plan with data, plan empty-date, plan invalid-date 400, export-all xlsx, export-hub xlsx, export-hub 404). Frontend e2e (Playwright) confirms app loads, KPIs render (Hubs 16, Orders 297, Returns 168 for 2026-06-23), helper chips show +2/-2 dates, 16 hub tabs render with hub-tab-<HubName> testids, Ahmedabad HUB tab opens orders-table (60 rows) and returns-table (35 rows), Download All Hubs triggers last_mile_plan_2026-06-23.xlsx download, Download Hub triggers plan_Ahmedabad_HUB_2026-06-23.xlsx download, empty date (2030-01-01) shows 'Nothing to plan' empty state.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_last_mile_planner.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 516 lines and combines sync, planning, and Excel export — could be split into routers/services modules for maintainability if it grows further.",
+    "Each /api/plan/export call rebuilds the plan and workbook in-process synchronously (openpyxl is CPU-bound) — fine at current data sizes but consider running build_workbook in a thread pool (run_in_threadpool) to avoid blocking the event loop for large plans.",
+    "Date parsing for delivery_date relies on string formats from the sheet; to_date_str silently returns None on parse failures and those orders will never match any plan_date — consider logging unparseable dates during sync.",
+    "/api/sync deletes all collections before inserts (non-atomic) — a fetch failure mid-way would leave data wiped; consider staging into temp collections or wrapping in a transaction.",
+    "CORS allow_origins defaults to '*' with allow_credentials=True which is invalid per CORS spec — works in dev but should be explicit in prod."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_last_mile_planner.py (new)",
+    "/app/test_reports/pytest/pytest_results.xml (generated)"
+  ],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "100%"},
+  "test_credentials": "N/A - no auth, public Google Sheet",
+  "seed_data_creation": "None - existing synced data used (orders=2521, returns=1888 after re-sync, serviceable=176, libraries=124). Note: returns_count from /api/sync/status returned 1888 (not 3139 mentioned in request) — this reflects current sheet contents.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend tests at /app/backend/tests/test_last_mile_planner.py. Run: pytest /app/backend/tests/ -v. The exact-2-days rule is validated by asserting every order.delivery_date == plan_date+2 and every return.request_date == plan_date-2 with return_status==RETURN_REQUESTED in test_plan_with_data. Frontend public URL: https://hub-dispatch-1.preview.emergentagent.com."
+}
