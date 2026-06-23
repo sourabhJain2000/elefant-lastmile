@@ -263,20 +263,54 @@ def parse_plan_date(value):
         raise HTTPException(status_code=400, detail="Invalid date format, expected YYYY-MM-DD")
 
 
-async def build_plan(plan_date: date):
+async def build_plan(plan_date: date, full: bool = False):
     target_delivery = plan_date + timedelta(days=2)
     return_request_date = plan_date - timedelta(days=2)
+    plan_iso = plan_date.isoformat()
+    target_iso = target_delivery.isoformat()
+    return_iso = return_request_date.isoformat()
 
     svc = await serviceable_map()
 
-    order_list = []
-    async for o in db.orders.find({"delivery_date": target_delivery.isoformat()}, {"_id": 0}):
-        o["serveable_status"] = svc.get(o["order_id"], "")
-        order_list.append(o)
+    order_proj = None if full else {
+        "_id": 0, "order_id": 1, "toy_name": 1, "toy_type": 1, "user_name": 1,
+        "pincode": 1, "order_status": 1, "expected_delivery_date": 1, "tags": 1,
+        "delivery_date": 1, "library_name": 1, "library_id": 1,
+    }
+    return_proj = None if full else {
+        "_id": 0, "return_order": 1, "order_id": 1, "product_name": 1, "user_name": 1,
+        "pincode": 1, "owner_library_name": 1, "receiving_library_name": 1,
+        "return_created_at": 1, "toy_condition": 1, "request_date": 1,
+        "hub_name": 1, "receiving_library": 1,
+    }
 
+    # Orders: scheduled (delivery in exactly 2 days) + overdue (delivery date
+    # already passed and order is still not delivered / shipped).
+    order_query = {
+        "$or": [
+            {"delivery_date": target_iso},
+            {
+                "delivery_date": {"$lt": plan_iso, "$ne": None},
+                "order_status": {"$nin": ["DELIVERED", "SHIPPED"]},
+            },
+        ]
+    }
+    order_list = []
+    async for o in db.orders.find(order_query, order_proj if order_proj else {"_id": 0}):
+        o["serveable_status"] = svc.get(o["order_id"], "")
+        o["is_overdue"] = bool(o.get("delivery_date") and o["delivery_date"] < plan_iso)
+        o["plan_status"] = "Overdue" if o["is_overdue"] else "Scheduled"
+        order_list.append(o)
+    order_list.sort(key=lambda x: (not x["is_overdue"], x.get("delivery_date") or "9999"))
+
+    # Returns (RETURN_REQUESTED): scheduled (requested exactly 2 days ago) +
+    # overdue (requested earlier, i.e. request date + 2 days already passed).
     return_list = []
-    async for r in db.returns.find({"request_date": return_request_date.isoformat()}, {"_id": 0}):
+    async for r in db.returns.find({"request_date": {"$lte": return_iso, "$ne": None}}, return_proj if return_proj else {"_id": 0}):
+        r["is_overdue"] = bool(r.get("request_date") and r["request_date"] < return_iso)
+        r["plan_status"] = "Overdue" if r["is_overdue"] else "Scheduled"
         return_list.append(r)
+    return_list.sort(key=lambda x: (not x["is_overdue"], x.get("request_date") or "9999"))
 
     hubs = {}
 
@@ -301,6 +335,8 @@ async def build_plan(plan_date: date):
     for h in hubs.values():
         h["order_count"] = len(h["orders"])
         h["return_count"] = len(h["returns"])
+        h["order_overdue_count"] = sum(1 for o in h["orders"] if o.get("is_overdue"))
+        h["return_overdue_count"] = sum(1 for r in h["returns"] if r.get("is_overdue"))
         hub_list.append(h)
     hub_list.sort(key=lambda x: (-(x["order_count"] + x["return_count"]), x["hub_name"]))
 
@@ -312,6 +348,8 @@ async def build_plan(plan_date: date):
             "hubs": len(hub_list),
             "orders": len(order_list),
             "returns": len(return_list),
+            "orders_overdue": sum(1 for o in order_list if o.get("is_overdue")),
+            "returns_overdue": sum(1 for r in return_list if r.get("is_overdue")),
         },
         "hubs": hub_list,
     }
@@ -327,6 +365,7 @@ async def get_plan(date: str | None = Query(default=None)):
 
 ORDER_COLUMNS = [
     ("order_id", "Order Id"),
+    ("plan_status", "Plan Status"),
     ("toy_name", "Toy Name"),
     ("toy_type", "Toy Type"),
     ("user_name", "User Name"),
@@ -342,6 +381,7 @@ ORDER_COLUMNS = [
 
 RETURN_COLUMNS = [
     ("return_order", "Return Order"),
+    ("plan_status", "Plan Status"),
     ("order_id", "Order Id"),
     ("product_name", "Product Name"),
     ("user_name", "User Name"),
@@ -470,7 +510,7 @@ def build_workbook(plan, single_hub=None):
 @api_router.get("/plan/export")
 async def export_plan(date: str | None = Query(default=None)):
     plan_date = parse_plan_date(date)
-    plan = await build_plan(plan_date)
+    plan = await build_plan(plan_date, full=True)
     buf = build_workbook(plan)
     fname = f"last_mile_plan_{plan['plan_date']}.xlsx"
     return StreamingResponse(
@@ -483,7 +523,7 @@ async def export_plan(date: str | None = Query(default=None)):
 @api_router.get("/plan/export/hub")
 async def export_hub(hub: str, date: str | None = Query(default=None)):
     plan_date = parse_plan_date(date)
-    plan = await build_plan(plan_date)
+    plan = await build_plan(plan_date, full=True)
     buf = build_workbook(plan, single_hub=hub)
     safe = re.sub(r"[^A-Za-z0-9]+", "_", hub).strip("_")
     fname = f"plan_{safe}_{plan['plan_date']}.xlsx"

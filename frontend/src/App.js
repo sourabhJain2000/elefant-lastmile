@@ -72,7 +72,7 @@ function StatusBadge({ status }) {
   );
 }
 
-function Kpi({ icon, label, value, accent }) {
+function Kpi({ icon, label, value, accent, sub }) {
   return (
     <div
       className="bg-white border border-zinc-200 rounded-sm p-5 flex items-center gap-4 shadow-sm relative overflow-hidden"
@@ -86,6 +86,7 @@ function Kpi({ icon, label, value, accent }) {
         <span className="text-3xl sm:text-4xl font-semibold text-zinc-900 font-mono tracking-tighter">
           {value}
         </span>
+        {sub ? <span className="text-xs font-medium text-red-600">{sub}</span> : null}
       </div>
       <div className="ml-auto text-zinc-300">{icon}</div>
     </div>
@@ -107,20 +108,36 @@ const TD = ({ children, mono }) => (
   </td>
 );
 
+function OverdueBadge({ overdue }) {
+  if (overdue)
+    return (
+      <span className="inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-semibold border bg-red-50 text-red-700 border-red-200 whitespace-nowrap" data-testid="overdue-badge">
+        <Warning size={12} weight="fill" /> Overdue
+      </span>
+    );
+  return (
+    <span className="inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-medium border bg-emerald-50 text-emerald-700 border-emerald-200 whitespace-nowrap">
+      Scheduled
+    </span>
+  );
+}
+
 function OrdersTable({ orders }) {
   if (!orders.length)
-    return <p className="text-sm text-zinc-400 px-1 py-4">No orders to deliver for this hub.</p>;
+    return <p className="text-sm text-zinc-400 px-1 py-4">No orders to plan for this hub.</p>;
   return (
     <div className="w-full overflow-x-auto border border-zinc-200 rounded-sm bg-white">
       <table className="w-full border-collapse" data-testid="orders-table">
         <thead className="bg-zinc-50 border-b border-zinc-200">
           <tr>
             <TH>Order Id</TH>
+            <TH>Plan</TH>
             <TH>Toy</TH>
             <TH>Type</TH>
             <TH>Customer</TH>
             <TH>Pincode</TH>
             <TH>Status</TH>
+            <TH>Expected Delivery</TH>
             <TH>Serviceable</TH>
             <TH>Tags</TH>
           </tr>
@@ -129,15 +146,19 @@ function OrdersTable({ orders }) {
           {orders.map((o, i) => (
             <tr
               key={o.order_id + i}
-              className="hover:bg-blue-50/40 transition-colors border-b border-zinc-100 last:border-0"
+              className={`transition-colors border-b border-zinc-100 last:border-0 ${
+                o.is_overdue ? "bg-red-50/40 hover:bg-red-50/70" : "hover:bg-blue-50/40"
+              }`}
               data-testid="order-row"
             >
               <TD mono>{o.order_id}</TD>
+              <TD><OverdueBadge overdue={o.is_overdue} /></TD>
               <TD>{o.toy_name}</TD>
               <TD>{o.toy_type}</TD>
               <TD>{o.user_name || "—"}</TD>
               <TD mono>{o.pincode || "—"}</TD>
               <TD><StatusBadge status={o.order_status} /></TD>
+              <TD mono>{fmtDateTime(o.expected_delivery_date)}</TD>
               <TD><ServiceBadge status={o.serveable_status} /></TD>
               <TD>
                 <span className="text-xs text-zinc-500 max-w-[220px] inline-block truncate align-bottom">
@@ -161,6 +182,7 @@ function ReturnsTable({ returns }) {
         <thead className="bg-zinc-50 border-b border-zinc-200">
           <tr>
             <TH>Return Id</TH>
+            <TH>Plan</TH>
             <TH>Order Id</TH>
             <TH>Product</TH>
             <TH>Customer</TH>
@@ -174,10 +196,13 @@ function ReturnsTable({ returns }) {
           {returns.map((r, i) => (
             <tr
               key={r.return_order + i}
-              className="hover:bg-amber-50/40 transition-colors border-b border-zinc-100 last:border-0"
+              className={`transition-colors border-b border-zinc-100 last:border-0 ${
+                r.is_overdue ? "bg-red-50/40 hover:bg-red-50/70" : "hover:bg-amber-50/40"
+              }`}
               data-testid="return-row"
             >
               <TD mono>{r.return_order}</TD>
+              <TD><OverdueBadge overdue={r.is_overdue} /></TD>
               <TD mono>{r.order_id}</TD>
               <TD>{r.product_name}</TD>
               <TD>{r.user_name || "—"}</TD>
@@ -393,7 +418,7 @@ function App() {
               <Package size={18} className="text-blue-600" weight="bold" />
               <div className="leading-tight">
                 <p className="text-[11px] text-blue-700 uppercase tracking-wider font-semibold">
-                  Deliveries on (+2 days)
+                  Deliveries on (+2 days) + overdue
                 </p>
                 <p className="text-sm font-mono text-blue-900">
                   {fmtDate(plan?.target_delivery_date)}
@@ -404,7 +429,7 @@ function App() {
               <ArrowUUpLeft size={18} className="text-amber-600" weight="bold" />
               <div className="leading-tight">
                 <p className="text-[11px] text-amber-700 uppercase tracking-wider font-semibold">
-                  Returns requested on (−2 days)
+                  Returns requested by (−2 days) + overdue
                 </p>
                 <p className="text-sm font-mono text-amber-900">
                   {fmtDate(plan?.return_request_date)}
@@ -455,12 +480,14 @@ function App() {
               label="Orders to Deliver"
               value={plan?.totals?.orders ?? "—"}
               accent="bg-blue-600"
+              sub={plan?.totals?.orders_overdue ? `${plan.totals.orders_overdue} overdue` : null}
             />
             <Kpi
               icon={<ArrowUUpLeft size={40} weight="duotone" />}
               label="Returns to Pick Up"
               value={plan?.totals?.returns ?? "—"}
               accent="bg-amber-600"
+              sub={plan?.totals?.returns_overdue ? `${plan.totals.returns_overdue} overdue` : null}
             />
           </div>
         )}
