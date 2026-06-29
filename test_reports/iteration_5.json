@@ -1,0 +1,36 @@
+{
+  "summary": "Returns accuracy audit on /api/plan completed against live preview URL. Created /app/backend/tests/test_returns_accuracy.py (12 tests, all passing). Live plan @ 2026-06-29 (cutoff 2026-06-27): totals.returns=2484 (2273 overdue), totals.orders=1035 (508 overdue), hubs=17. Returns invariants verified: (a) every return has return_status == RETURN_REQUESTED (no leakage of other statuses); (b) every request_date <= 2026-06-27; (c) all return_order values UNIQUE across all hubs (no double counting); (d) sum of hub.return_count == totals.returns; (e) is_overdue == (request_date < 2026-06-27) for every row; (f) returns_overdue/total ratio ~91.5% (large backlog). Cross-check: totals.returns=2484 falls in the expected 2200..2800 band against source ~2479 RETURN_REQUESTED with created<=2026-06-27. Boundary checks: plan_date=2026-06-20 (cutoff 2026-06-18) returned a STRICT SUBSET of 2026-06-29 results; plan_date=2030-01-01 returned 2659 returns (essentially all RETURN_REQUESTED); plan_date=2020-01-01 returned 0 returns. Regression: orders are all PLACED/CONFIRMED, delivery_date <= 2026-07-01, unique order_ids. Excel: /api/plan/export?date=2026-06-29 200 OK; the hub with max returns (Ahmedabad HUB, 650 returns) has a 'RETURNS TO PICK UP (650)' section and the parenthesized count matches the API hub.return_count. Frontend (Playwright @1920x1080): KPI 'RETURNS TO PICK UP' shows 2484 with '2273 overdue' sub-count, 'Returns Requested by (-2 days) + Overdue / Sat, 27 Jun, 2026' label present; clicking Ahmedabad HUB renders [data-testid=returns-table] with 650 [data-testid=return-row] entries, visible 'Scheduled' badges and 'Requested' column header; switching across tab-plan/tab-confirm/tab-returns works with zero error-class elements.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Returns table per hub", "issues": ["Return rows show 'Scheduled'/'Overdue' status badges visibly but the test-ids on these badges differ from the order-table convention (data-testid='return-overdue-badge'/'return-scheduled-badge' selectors returned 0 hits). Visual rendering correct; consider standardising data-testid naming for automated assertions."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_returns_accuracy.py",
+    "/app/backend/tests/test_last_mile_planner.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "[Low] Add explicit data-testid='return-overdue-badge' / 'return-scheduled-badge' on the returns-table status pills to mirror the orders-table convention.",
+    "[Low] Consider lowering totals.returns expected upper bound or making the test self-calibrating; currently hard-coded 2200..2800 against ~2479 source — live drift could trip it."
+  ],
+  "critical_code_review_comments": [
+    "build_plan returns query filters by request_date <= return_iso but does NOT exclude returns whose request_date is null (the '$ne': None handles nulls when stored as None, but stored empty strings would still pass '<=' string comparison; to_date_str returns None on parse failure so this is fine — keep an integration test guarding that any future parser change cannot leak null request_dates).",
+    "server.py still 840 LOC, repeated _autosize/HEADER_FILL pattern across three export builders — extract a small excel helper module.",
+    "Returns are stored as 'all non-RETURN_CONFIRMED' in sync, then re-filtered to RETURN_REQUESTED in /api/plan — an extra in-memory pass. Consider indexing db.returns on (return_status, request_date) for faster queries when the sheet grows."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_returns_accuracy.py (NEW: 12 tests covering returns accuracy invariants, boundaries, orders regression, and Excel returns section)",
+    "/app/test_reports/pytest/pytest_results.xml (regenerated)"
+  ],
+  "success_rate": {"backend": "100% (12/12 returns audit; 20/20 prior planner suite)", "frontend": "100%"},
+  "test_credentials": "N/A - no auth, public Google Sheet (default URL)",
+  "seed_data_creation": "None. Used already-synced live data: orders_count=2556, returns_count=7159, serviceable=1668, libraries=49.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/ -v. Returns audit lives in test_returns_accuracy.py and uses BASE_URL=REACT_APP_BACKEND_URL. Key invariants encoded: every return status == RETURN_REQUESTED, request_date <= plan_date-2, unique return_order across hubs, hub.return_count sums to totals.returns, is_overdue strict inequality, far-past plan_date returns 0, earlier plan_date is a strict subset of a later plan_date. Live counts at this run: totals.returns=2484 (2273 overdue), totals.orders=1035, hubs=17. Future plan_date=2030-01-01 returned ~2659 returns (full RETURN_REQUESTED universe).",
+  "rca of the issue": "N/A — verification-only audit. All returns accuracy invariants hold against live data."
+}
