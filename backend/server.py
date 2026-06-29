@@ -161,10 +161,13 @@ async def sync_sheet(body: SyncRequest):
             "tags": clean(r.get("Tags")),
         })
 
+    # Returns: store all that are NOT yet RETURN_CONFIRMED (pipeline returns).
+    # The last-mile planner uses the RETURN_REQUESTED subset; the order
+    # confirmation view uses any pending return as potential incoming stock.
     return_docs = []
     for r in sheet_records(returns_ws):
         status = clean(r.get("Return Order Status")).upper()
-        if status != RETURN_REQUESTED_STATUS:
+        if not status or status == "RETURN_CONFIRMED":
             continue
         receiving = clean(r.get("Receiving Library Name"))
         owner = clean(r.get("Owner Library Name"))
@@ -192,14 +195,37 @@ async def sync_sheet(body: SyncRequest):
             "tags": clean(r.get("Tags")),
         })
 
+    # Serviceability snapshot (one row per PLACED order).
     serviceable_docs = []
     seen_orders = set()
     for r in sheet_records(serviceable_ws):
-        oid = clean(r.get("order_id"))
-        st = clean(r.get("Serveable Status"))
-        if oid and oid not in seen_orders:
-            seen_orders.add(oid)
-            serviceable_docs.append({"order_id": oid, "serveable_status": st})
+        oid = clean(r.get("Order Number")) or clean(r.get("order_id"))
+        if not oid or oid in seen_orders:
+            continue
+        seen_orders.add(oid)
+        svc_raw = clean(r.get("Serviceability")) or clean(r.get("Serveable Status"))
+        inv = r.get("Available Inventory")
+        try:
+            inv_num = int(float(inv)) if inv not in (None, "") else 0
+        except Exception:
+            inv_num = 0
+        serviceable_docs.append({
+            "order_id": oid,
+            "serviceability": svc_raw,
+            "order_status": clean(r.get("Order Status")).upper(),
+            "order_type": clean(r.get("Order Type")),
+            "priority": clean(r.get("Priority Queue")),
+            "product_id": clean(r.get("Product Number")),
+            "product_name": clean(r.get("Product Name")),
+            "library_id": clean(r.get("Library Number")),
+            "library_name": clean(r.get("Library Name")) or "Unassigned",
+            "city": clean(r.get("City")),
+            "user_id": clean(r.get("User Number")),
+            "user_name": clean(r.get("User Name")),
+            "available_inventory": inv_num,
+            "expected_delivery_date": clean(r.get("Expected Delivery Date")),
+            "order_placed_on": clean(r.get("Order Placed On")),
+        })
 
     library_docs = []
     for r in sheet_records(library_ws):
@@ -249,8 +275,8 @@ async def sync_status():
 
 async def serviceable_map():
     out = {}
-    async for d in db.serviceable.find({}, {"_id": 0}):
-        out[d["order_id"]] = d.get("serveable_status", "")
+    async for d in db.serviceable.find({}, {"_id": 0, "order_id": 1, "serviceability": 1}):
+        out[d["order_id"]] = d.get("serviceability", "")
     return out
 
 
@@ -306,7 +332,7 @@ async def build_plan(plan_date: date, full: bool = False):
     # Returns (RETURN_REQUESTED): scheduled (requested exactly 2 days ago) +
     # overdue (requested earlier, i.e. request date + 2 days already passed).
     return_list = []
-    async for r in db.returns.find({"request_date": {"$lte": return_iso, "$ne": None}}, return_proj if return_proj else {"_id": 0}):
+    async for r in db.returns.find({"return_status": "RETURN_REQUESTED", "request_date": {"$lte": return_iso, "$ne": None}}, return_proj if return_proj else {"_id": 0}):
         r["is_overdue"] = bool(r.get("request_date") and r["request_date"] < return_iso)
         r["plan_status"] = "Overdue" if r["is_overdue"] else "Scheduled"
         return_list.append(r)
@@ -359,6 +385,100 @@ async def build_plan(plan_date: date, full: bool = False):
 async def get_plan(date: str | None = Query(default=None)):
     plan_date = parse_plan_date(date)
     return await build_plan(plan_date)
+
+
+# ----------------------------- order confirmation -----------------------------
+
+async def build_confirmation():
+    """
+    Two operational lists, grouped by warehouse (serving library):
+      1. ready_to_confirm  -> Fully Serviceable PLACED orders (stock available,
+         move PLACED -> CONFIRMED and send to WH).
+      2. awaiting_return   -> Not Serviceable PLACED orders whose toy has a
+         pending (not-yet-confirmed) return coming back to that same WH; they
+         become confirmable once that return is marked RETURN_CONFIRMED.
+    """
+    # Index pending returns by (product_id, library_code) using both the
+    # owner library (home of the toy) and the receiving library.
+    returns_by_key = {}
+    async for r in db.returns.find(
+        {},
+        {"_id": 0, "product_id": 1, "owner_library": 1, "receiving_library": 1,
+         "owner_library_name": 1, "receiving_library_name": 1, "return_order": 1,
+         "return_status": 1, "product_name": 1, "return_created_at": 1},
+    ):
+        pid = r.get("product_id")
+        if not pid:
+            continue
+        info = {
+            "return_order": r.get("return_order"),
+            "return_status": r.get("return_status"),
+            "product_name": r.get("product_name"),
+            "return_created_at": r.get("return_created_at"),
+            "library_name": r.get("receiving_library_name") or r.get("owner_library_name"),
+        }
+        for lib in {r.get("owner_library"), r.get("receiving_library")}:
+            if lib:
+                returns_by_key.setdefault((pid, lib), []).append(info)
+
+    hubs = {}
+
+    def ensure(name, code):
+        if name not in hubs:
+            hubs[name] = {"hub_name": name, "hub_code": code or "", "ready_to_confirm": [], "awaiting_return": []}
+        elif code and not hubs[name]["hub_code"]:
+            hubs[name]["hub_code"] = code
+        return hubs[name]
+
+    ready_total = 0
+    awaiting_total = 0
+
+    async for s in db.serviceable.find({}, {"_id": 0}):
+        svc = (s.get("serviceability") or "").lower()
+        lib_name = s.get("library_name") or "Unassigned"
+        lib_code = s.get("library_id") or ""
+        base = {
+            "order_id": s.get("order_id"),
+            "product_id": s.get("product_id"),
+            "product_name": s.get("product_name"),
+            "user_name": s.get("user_name"),
+            "order_type": s.get("order_type"),
+            "available_inventory": s.get("available_inventory", 0),
+            "expected_delivery_date": s.get("expected_delivery_date"),
+            "order_status": s.get("order_status"),
+        }
+        if "fully" in svc:
+            ensure(lib_name, lib_code)["ready_to_confirm"].append(base)
+            ready_total += 1
+        elif "not" in svc or "partial" in svc:
+            matches = returns_by_key.get((s.get("product_id"), s.get("library_id")), [])
+            if matches:
+                item = dict(base)
+                item["matching_returns"] = matches
+                ensure(lib_name, lib_code)["awaiting_return"].append(item)
+                awaiting_total += 1
+
+    hub_list = []
+    for h in hubs.values():
+        h["ready_count"] = len(h["ready_to_confirm"])
+        h["awaiting_count"] = len(h["awaiting_return"])
+        hub_list.append(h)
+    hub_list.sort(key=lambda x: (-(x["ready_count"] + x["awaiting_count"]), x["hub_name"]))
+
+    return {
+        "totals": {
+            "hubs": len(hub_list),
+            "ready_to_confirm": ready_total,
+            "awaiting_return": awaiting_total,
+        },
+        "hubs": hub_list,
+    }
+
+
+@api_router.get("/confirmation")
+async def get_confirmation():
+    return await build_confirmation()
+
 
 
 # ----------------------------- excel export -----------------------------
@@ -532,6 +652,128 @@ async def export_hub(hub: str, date: str | None = Query(default=None)):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+CONFIRM_READY_COLUMNS = [
+    ("order_id", "Order Id"),
+    ("product_name", "Product Name"),
+    ("product_id", "Product Id"),
+    ("user_name", "User Name"),
+    ("order_type", "Order Type"),
+    ("available_inventory", "Available Inventory"),
+    ("expected_delivery_date", "Expected Delivery Date"),
+    ("order_status", "Current Status"),
+]
+
+CONFIRM_AWAIT_COLUMNS = [
+    ("order_id", "Order Id"),
+    ("product_name", "Product Name"),
+    ("product_id", "Product Id"),
+    ("user_name", "User Name"),
+    ("order_type", "Order Type"),
+    ("available_inventory", "Available Inventory"),
+    ("returns_summary", "Pending Returns To Confirm"),
+]
+
+
+def _write_confirmation_sheet(ws, hub):
+    row = 1
+    ws.cell(row=row, column=1, value=f"{hub['hub_name']}  ({hub.get('hub_code','')})").font = openpyxl.styles.Font(bold=True, size=14)
+    row += 2
+
+    ws.cell(row=row, column=1, value=f"READY TO CONFIRM — SEND TO WH ({hub['ready_count']})").font = SECTION_FONT
+    row += 1
+    for ci, (_, label) in enumerate(CONFIRM_READY_COLUMNS, start=1):
+        c = ws.cell(row=row, column=ci, value=label)
+        c.fill = HEADER_FILL
+        c.font = HEADER_FONT
+    row += 1
+    for o in hub["ready_to_confirm"]:
+        for ci, (key, _) in enumerate(CONFIRM_READY_COLUMNS, start=1):
+            ws.cell(row=row, column=ci, value=o.get(key, ""))
+        row += 1
+    row += 2
+
+    ws.cell(row=row, column=1, value=f"AWAITING RETURN CONFIRMATION ({hub['awaiting_count']})").font = SECTION_FONT
+    row += 1
+    for ci, (_, label) in enumerate(CONFIRM_AWAIT_COLUMNS, start=1):
+        c = ws.cell(row=row, column=ci, value=label)
+        c.fill = HEADER_FILL
+        c.font = HEADER_FONT
+    row += 1
+    for o in hub["awaiting_return"]:
+        summary = "; ".join(
+            f"{m.get('return_order')} ({m.get('return_status')})" for m in o.get("matching_returns", [])
+        )
+        vals = dict(o)
+        vals["returns_summary"] = summary
+        for ci, (key, _) in enumerate(CONFIRM_AWAIT_COLUMNS, start=1):
+            ws.cell(row=row, column=ci, value=vals.get(key, ""))
+        row += 1
+    _autosize(ws)
+
+
+def build_confirmation_workbook(conf, single_hub=None):
+    wb = openpyxl.Workbook()
+    used = set()
+    hubs = conf["hubs"]
+    if single_hub is not None:
+        hubs = [h for h in conf["hubs"] if h["hub_name"] == single_hub]
+        if not hubs:
+            raise HTTPException(status_code=404, detail="Hub not found")
+
+    if single_hub is None:
+        ws = wb.active
+        ws.title = _safe_sheet_name("Summary", used)
+        ws.cell(row=1, column=1, value="ORDER CONFIRMATION PLAN").font = openpyxl.styles.Font(bold=True, size=16)
+        ws.cell(row=3, column=1, value=f"Total Hubs: {conf['totals']['hubs']}   Ready to Confirm: {conf['totals']['ready_to_confirm']}   Awaiting Return: {conf['totals']['awaiting_return']}")
+        head_row = 5
+        for ci, label in enumerate(["Hub", "Hub Code", "Ready to Confirm", "Awaiting Return"], start=1):
+            c = ws.cell(row=head_row, column=ci, value=label)
+            c.fill = HEADER_FILL
+            c.font = HEADER_FONT
+        rr = head_row + 1
+        for h in conf["hubs"]:
+            ws.cell(row=rr, column=1, value=h["hub_name"])
+            ws.cell(row=rr, column=2, value=h.get("hub_code", ""))
+            ws.cell(row=rr, column=3, value=h["ready_count"])
+            ws.cell(row=rr, column=4, value=h["awaiting_count"])
+            rr += 1
+        _autosize(ws)
+        for h in hubs:
+            _write_confirmation_sheet(wb.create_sheet(title=_safe_sheet_name(h["hub_name"], used)), h)
+    else:
+        _write_confirmation_sheet(wb.active, hubs[0])
+        wb.active.title = _safe_sheet_name(hubs[0]["hub_name"], used)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+@api_router.get("/confirmation/export")
+async def export_confirmation():
+    conf = await build_confirmation()
+    buf = build_confirmation_workbook(conf)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="order_confirmation_plan.xlsx"'},
+    )
+
+
+@api_router.get("/confirmation/export/hub")
+async def export_confirmation_hub(hub: str):
+    conf = await build_confirmation()
+    buf = build_confirmation_workbook(conf, single_hub=hub)
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", hub).strip("_")
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="confirmation_{safe}.xlsx"'},
+    )
+
 
 
 @api_router.get("/")

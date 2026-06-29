@@ -1,0 +1,28 @@
+{
+  "summary": "End-to-end testing of Last Mile Planner + new Order Confirmation feature. Backend: 14/14 pytest tests passed (sync status, full POST /api/sync re-sync ~12s, /api/plan for 2026-06-29 with serviceability mapping verified, /api/plan empty-date 2020-01-01, /api/plan invalid-date 400, /api/plan/export xlsx with Summary sheet, /api/plan/export/hub 404, /api/confirmation structure+totals, ready_to_confirm rows are PLACED, awaiting_return rows all have non-empty matching_returns where no return_status==RETURN_CONFIRMED, /api/confirmation/export xlsx with Summary+hubs, /api/confirmation/export/hub xlsx single-sheet, hub 404). Frontend (Playwright @1920x1080): both tabs render, default is Last Mile Plan with date 2026-06-29 showing orders-table, returns-table, 'Expected Delivery' column, 632 overdue badges and 16 visible serviceable badges. Order Confirmation tab shows KPIs Warehouses=18, Ready to Confirm=528, Awaiting Return=1047, renders 18 conf-hub-tab-<Name> warehouse tabs, ready-table and awaiting-table visible. Andheri Hub - Mumbai has 226 awaiting rows with 679 pending-return chips showing status badges. conf-download-all-btn downloaded order_confirmation_plan.xlsx and conf-download-hub-btn downloaded confirmation_Andheri_Hub_Mumbai.xlsx. Switching back to Last Mile Plan re-renders orders-table and returns-table.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_last_mile_planner.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "build_confirmation() iterates db.serviceable and for each row calls returns_by_key.get((product_id, library_id)) which is great — but the same returns are stored under BOTH owner_library and receiving_library keys, so a single pending return can match awaiting_return entries at two different warehouses. That is intentional per the spec (return coming back to that same WH) but may create double-counting if a toy's owner_library != receiving_library and both warehouses have not-serviceable PLACED orders for the same product. Consider a comment clarifying the dual-indexing intent.",
+    "build_confirmation has no warehouse filter / pagination — endpoint returns full 1500+ rows in one shot (~1MB JSON). For larger sheets consider /api/confirmation?hub=... server-side filtering or paginated lists per warehouse.",
+    "sync_sheet() still does delete_many → insert_many without a transaction (was also called out in iteration_1). A mid-sync fetch failure now risks losing 4 collections (orders, returns, serviceable, libraries). Stage into temp collections or use a multi-doc transaction.",
+    "/api/plan returns can include returns with very old request_date (e.g., months overdue) as long as request_date <= plan_date-2; for a far-future plan_date this surfaces ALL pending returns. Plan should probably have an upper bound or a 'cap overdue window' option.",
+    "server.py is now ~800 lines combining sync, plan, confirmation and two excel exporters — exceeds the 700 LOC guideline; split into routers/services for sync, plan, confirmation, excel.",
+    "ConfirmationView's data-testid for hub tab uses raw hub_name including spaces ('conf-hub-tab-Andheri Hub - Mumbai'). Works with attribute-selectors but not CSS-id-safe; consider slugifying for stability."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_last_mile_planner.py (expanded with confirmation + confirmation-export coverage and switched plan date to 2026-06-29)",
+    "/app/test_reports/pytest/pytest_results.xml (regenerated)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100%"},
+  "test_credentials": "N/A - no auth, public Google Sheet",
+  "seed_data_creation": "None. Used already-synced data. POST /api/sync re-syncs from live sheet inside the suite (counts: orders ~545, returns ~7134, serviceable >500, libraries 124 at time of run).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend tests at /app/backend/tests/test_last_mile_planner.py — run `pytest /app/backend/tests/ -v`. Live sheet data evolves so absolute counts (e.g., orders_count exact value) are not asserted; tests assert >0 only. Plan tests use 2026-06-29 (target_delivery 2026-07-01, return_req 2026-06-27). Empty-plan test uses past date 2020-01-01 to guarantee zero rows. Frontend public URL: https://hub-dispatch-1.preview.emergentagent.com. Confirmation feature endpoints: GET /api/confirmation, GET /api/confirmation/export, GET /api/confirmation/export/hub?hub=<name>. Frontend testids added in this iteration: tab-plan, tab-confirm, conf-kpi-warehouses, conf-kpi-ready-to-confirm, conf-kpi-awaiting-return, conf-hub-tab-<HubName>, ready-table, awaiting-table, ready-row, awaiting-row, conf-download-all-btn, conf-download-hub-btn."
+}

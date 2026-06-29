@@ -3,6 +3,7 @@ import "@/App.css";
 import axios from "axios";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
+import ConfirmationView from "@/ConfirmationView";
 import {
   Truck,
   ArrowsClockwise,
@@ -20,6 +21,22 @@ import {
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+function TabButton({ active, onClick, testid, children }) {
+  return (
+    <button
+      onClick={onClick}
+      data-testid={testid}
+      className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+        active
+          ? "border-blue-600 text-zinc-900"
+          : "border-transparent text-zinc-500 hover:text-zinc-800"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -231,6 +248,7 @@ function App() {
   const [plan, setPlan] = useState(null);
   const [loadingPlan, setLoadingPlan] = useState(false);
   const [activeHub, setActiveHub] = useState(null);
+  const [view, setView] = useState("plan");
 
   const downloadFile = (url, name) => {
     const a = document.createElement("a");
@@ -395,7 +413,23 @@ function App() {
       </header>
 
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-6 sm:py-8 flex flex-col gap-6">
+        {syncMeta?.synced && (
+          <div className="flex items-center gap-1 border-b border-zinc-200">
+            <TabButton active={view === "plan"} onClick={() => setView("plan")} testid="tab-plan">
+              Last Mile Plan
+            </TabButton>
+            <TabButton active={view === "confirm"} onClick={() => setView("confirm")} testid="tab-confirm">
+              Order Confirmation
+            </TabButton>
+          </div>
+        )}
+
+        {syncMeta?.synced && view === "confirm" && (
+          <ConfirmationView downloadFile={downloadFile} />
+        )}
+
         {/* Controls */}
+        {syncMeta?.synced && view === "plan" && (
         <div className="bg-white border border-zinc-200 rounded-sm shadow-sm p-4 sm:p-5 flex flex-col lg:flex-row lg:items-end gap-4">
           <div className="flex flex-col gap-1.5">
             <label className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">
@@ -447,6 +481,7 @@ function App() {
             <DownloadSimple size={18} weight="bold" /> Download All Hubs (Excel)
           </button>
         </div>
+        )}
 
         {/* Not synced prompt */}
         {!syncMeta?.synced && !syncing && (
@@ -467,7 +502,7 @@ function App() {
         )}
 
         {/* KPIs */}
-        {syncMeta?.synced && (
+        {syncMeta?.synced && view === "plan" && (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <Kpi
               icon={<Buildings size={40} weight="duotone" />}
@@ -493,7 +528,7 @@ function App() {
         )}
 
         {/* Plan grid */}
-        {syncMeta?.synced && (
+        {syncMeta?.synced && view === "plan" && (
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
             {/* Hub nav */}
             <aside className="xl:col-span-3 2xl:col-span-2">
