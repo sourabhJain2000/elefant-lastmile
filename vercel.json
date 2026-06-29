@@ -5,7 +5,8 @@
       "framework": "create-react-app"
     },
     "backend": {
-      "root": "backend"
+      "root": "backend",
+      "framework": "fastapi"
     }
   },
   "rewrites": [
@@ -25,3 +26,6 @@
     }
   ]
 }
+git add vercel.json
+git commit -m "Fix backend framework for Vercel"
+git push
