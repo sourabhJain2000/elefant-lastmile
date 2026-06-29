@@ -4,6 +4,7 @@ import axios from "axios";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import ConfirmationView from "@/ConfirmationView";
+import ReturnConfirmationView from "@/ReturnConfirmationView";
 import {
   Truck,
   ArrowsClockwise,
@@ -421,11 +422,18 @@ function App() {
             <TabButton active={view === "confirm"} onClick={() => setView("confirm")} testid="tab-confirm">
               Order Confirmation
             </TabButton>
+            <TabButton active={view === "returns"} onClick={() => setView("returns")} testid="tab-returns">
+              Confirm via Returns
+            </TabButton>
           </div>
         )}
 
         {syncMeta?.synced && view === "confirm" && (
           <ConfirmationView downloadFile={downloadFile} />
+        )}
+
+        {syncMeta?.synced && view === "returns" && (
+          <ReturnConfirmationView downloadFile={downloadFile} />
         )}
 
         {/* Controls */}

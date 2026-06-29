@@ -5,11 +5,8 @@ import {
   Buildings,
   DownloadSimple,
   CheckCircle,
-  ArrowsClockwise,
-  ArrowUUpLeft,
   Spinner,
   PaperPlaneTilt,
-  Clock,
 } from "@phosphor-icons/react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -21,20 +18,6 @@ const fmtDate = (iso) => {
   if (isNaN(d)) return iso;
   return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 };
-
-function ReturnStatusBadge({ status }) {
-  const s = (status || "").toUpperCase();
-  let cls = "bg-zinc-100 text-zinc-700 border-zinc-200";
-  if (s === "RETURN_REQUESTED") cls = "bg-amber-50 text-amber-700 border-amber-200";
-  else if (s === "NOT_PICKED_UP") cls = "bg-red-50 text-red-700 border-red-200";
-  else if (["READY_TO_PICKUP", "PICKED_UP", "ARRIVED"].includes(s))
-    cls = "bg-blue-50 text-blue-700 border-blue-200";
-  return (
-    <span className={`inline-flex items-center rounded-sm px-2 py-0.5 text-[11px] font-medium border ${cls} whitespace-nowrap`}>
-      {status}
-    </span>
-  );
-}
 
 const TH = ({ children }) => (
   <th className="px-3 py-2.5 text-left text-[11px] font-semibold text-zinc-600 uppercase tracking-wider whitespace-nowrap">
@@ -77,46 +60,6 @@ function ReadyTable({ orders }) {
                 <span className="inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-medium border bg-zinc-100 text-zinc-700 border-zinc-200">
                   {o.order_status}
                 </span>
-              </TD>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function AwaitingTable({ orders }) {
-  if (!orders.length)
-    return <p className="text-sm text-zinc-400 px-1 py-4">No orders awaiting return confirmation for this hub.</p>;
-  return (
-    <div className="w-full overflow-x-auto border border-zinc-200 rounded-sm bg-white">
-      <table className="w-full border-collapse" data-testid="awaiting-table">
-        <thead className="bg-zinc-50 border-b border-zinc-200">
-          <tr>
-            <TH>Order Id</TH>
-            <TH>Product</TH>
-            <TH>Customer</TH>
-            <TH>Available Inv.</TH>
-            <TH>Pending Returns to Confirm</TH>
-          </tr>
-        </thead>
-        <tbody>
-          {orders.map((o, i) => (
-            <tr key={o.order_id + i} className="hover:bg-zinc-50 transition-colors border-b border-zinc-100 last:border-0" data-testid="awaiting-row">
-              <TD mono>{o.order_id}</TD>
-              <TD>{o.product_name}</TD>
-              <TD>{o.user_name || "—"}</TD>
-              <TD mono>{o.available_inventory}</TD>
-              <TD>
-                <div className="flex flex-wrap gap-1.5 max-w-[480px]">
-                  {(o.matching_returns || []).map((m, j) => (
-                    <span key={j} className="inline-flex items-center gap-1.5 rounded-sm border border-zinc-200 bg-white px-2 py-0.5">
-                      <span className="font-mono text-xs text-zinc-800">{m.return_order}</span>
-                      <ReturnStatusBadge status={m.return_status} />
-                    </span>
-                  ))}
-                </div>
               </TD>
             </tr>
           ))}
@@ -178,7 +121,7 @@ export default function ConfirmationView({ downloadFile }) {
         <div>
           <h2 className="font-heading text-lg font-bold tracking-tight text-zinc-900">Order Confirmation</h2>
           <p className="text-sm text-zinc-500">
-            Map PLACED orders by serviceability — confirm what's in stock, and track what's waiting on incoming returns.
+            Fully serviceable PLACED orders — stock is available, move them PLACED → CONFIRMED and send to the warehouse.
           </p>
         </div>
         <button
@@ -191,10 +134,9 @@ export default function ConfirmationView({ downloadFile }) {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Kpi icon={<Buildings size={40} weight="duotone" />} label="Warehouses" value={conf?.totals?.hubs ?? "—"} accent="bg-zinc-900" />
         <Kpi icon={<PaperPlaneTilt size={40} weight="duotone" />} label="Ready to Confirm" value={conf?.totals?.ready_to_confirm ?? "—"} accent="bg-emerald-600" />
-        <Kpi icon={<Clock size={40} weight="duotone" />} label="Awaiting Return" value={conf?.totals?.awaiting_return ?? "—"} accent="bg-amber-600" />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
@@ -217,11 +159,7 @@ export default function ConfirmationView({ downloadFile }) {
                       }`}
                     >
                       <span className="truncate">{h.hub_name}</span>
-                      <span className="flex items-center gap-1 text-[11px] font-mono">
-                        <span className="text-emerald-600">{h.ready_count}</span>
-                        <span className="text-zinc-300">/</span>
-                        <span className="text-amber-600">{h.awaiting_count}</span>
-                      </span>
+                      <span className="text-[11px] font-mono text-emerald-600">{h.ready_count}</span>
                     </button>
                   );
                 })
@@ -245,14 +183,9 @@ export default function ConfirmationView({ downloadFile }) {
                   <h2 className="font-heading text-xl font-bold tracking-tight leading-none">{current.hub_name}</h2>
                   {current.hub_code && <p className="text-xs text-zinc-500 font-mono mt-0.5">{current.hub_code}</p>}
                 </div>
-                <div className="flex items-center gap-2 ml-2">
-                  <span className="inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    <PaperPlaneTilt size={14} weight="bold" /> {current.ready_count} ready
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
-                    <Clock size={14} weight="bold" /> {current.awaiting_count} awaiting
-                  </span>
-                </div>
+                <span className="ml-2 inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  <PaperPlaneTilt size={14} weight="bold" /> {current.ready_count} ready
+                </span>
                 <button
                   onClick={() => downloadHub(current.hub_name)}
                   className="ml-auto inline-flex items-center gap-2 bg-emerald-50 border border-emerald-200 text-emerald-700 hover:bg-emerald-100 rounded-sm px-3 py-2 text-sm font-medium transition-colors"
@@ -270,24 +203,7 @@ export default function ConfirmationView({ downloadFile }) {
                   </h3>
                   <span className="text-sm text-zinc-400 font-mono">({current.ready_count})</span>
                 </div>
-                <p className="text-xs text-zinc-500 mb-2">
-                  Fully serviceable PLACED orders — stock is available, move them PLACED → CONFIRMED.
-                </p>
                 <ReadyTable orders={current.ready_to_confirm} />
-              </div>
-
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <ArrowUUpLeft size={18} weight="bold" className="text-amber-600" />
-                  <h3 className="font-heading text-base font-bold tracking-tight text-zinc-900">
-                    Awaiting Return Confirmation
-                  </h3>
-                  <span className="text-sm text-zinc-400 font-mono">({current.awaiting_count})</span>
-                </div>
-                <p className="text-xs text-zinc-500 mb-2">
-                  Not serviceable now — these can be confirmed once the listed return(s) at this warehouse are marked RETURN_CONFIRMED.
-                </p>
-                <AwaitingTable orders={current.awaiting_return} />
               </div>
             </>
           ) : (

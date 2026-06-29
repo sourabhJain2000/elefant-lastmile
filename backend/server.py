@@ -389,55 +389,31 @@ async def get_plan(date: str | None = Query(default=None)):
 
 # ----------------------------- order confirmation -----------------------------
 
+# Returns considered "confirmable" — the toy has been physically collected and is
+# en route / back at the warehouse, so the return can realistically be confirmed.
+CONFIRMABLE_RETURN_STATUSES = {"PICKED_UP", "RETURNED"}
+
+
 async def build_confirmation():
     """
-    Two operational lists, grouped by warehouse (serving library):
-      1. ready_to_confirm  -> Fully Serviceable PLACED orders (stock available,
-         move PLACED -> CONFIRMED and send to WH).
-      2. awaiting_return   -> Not Serviceable PLACED orders whose toy has a
-         pending (not-yet-confirmed) return coming back to that same WH; they
-         become confirmable once that return is marked RETURN_CONFIRMED.
+    Ready to Confirm — Fully Serviceable PLACED orders (stock available, move
+    PLACED -> CONFIRMED and send to WH), grouped by warehouse (serving library).
     """
-    # Index pending returns by (product_id, library_code) using both the
-    # owner library (home of the toy) and the receiving library.
-    returns_by_key = {}
-    async for r in db.returns.find(
-        {},
-        {"_id": 0, "product_id": 1, "owner_library": 1, "receiving_library": 1,
-         "owner_library_name": 1, "receiving_library_name": 1, "return_order": 1,
-         "return_status": 1, "product_name": 1, "return_created_at": 1},
-    ):
-        pid = r.get("product_id")
-        if not pid:
-            continue
-        info = {
-            "return_order": r.get("return_order"),
-            "return_status": r.get("return_status"),
-            "product_name": r.get("product_name"),
-            "return_created_at": r.get("return_created_at"),
-            "library_name": r.get("receiving_library_name") or r.get("owner_library_name"),
-        }
-        for lib in {r.get("owner_library"), r.get("receiving_library")}:
-            if lib:
-                returns_by_key.setdefault((pid, lib), []).append(info)
-
     hubs = {}
 
     def ensure(name, code):
         if name not in hubs:
-            hubs[name] = {"hub_name": name, "hub_code": code or "", "ready_to_confirm": [], "awaiting_return": []}
+            hubs[name] = {"hub_name": name, "hub_code": code or "", "ready_to_confirm": []}
         elif code and not hubs[name]["hub_code"]:
             hubs[name]["hub_code"] = code
         return hubs[name]
 
     ready_total = 0
-    awaiting_total = 0
-
     async for s in db.serviceable.find({}, {"_id": 0}):
-        svc = (s.get("serviceability") or "").lower()
+        if "fully" not in (s.get("serviceability") or "").lower():
+            continue
         lib_name = s.get("library_name") or "Unassigned"
-        lib_code = s.get("library_id") or ""
-        base = {
+        ensure(lib_name, s.get("library_id") or "")["ready_to_confirm"].append({
             "order_id": s.get("order_id"),
             "product_id": s.get("product_id"),
             "product_name": s.get("product_name"),
@@ -446,38 +422,73 @@ async def build_confirmation():
             "available_inventory": s.get("available_inventory", 0),
             "expected_delivery_date": s.get("expected_delivery_date"),
             "order_status": s.get("order_status"),
-        }
-        if "fully" in svc:
-            ensure(lib_name, lib_code)["ready_to_confirm"].append(base)
-            ready_total += 1
-        elif "not" in svc or "partial" in svc:
-            matches = returns_by_key.get((s.get("product_id"), s.get("library_id")), [])
-            if matches:
-                item = dict(base)
-                item["matching_returns"] = matches
-                ensure(lib_name, lib_code)["awaiting_return"].append(item)
-                awaiting_total += 1
+        })
+        ready_total += 1
 
     hub_list = []
     for h in hubs.values():
         h["ready_count"] = len(h["ready_to_confirm"])
-        h["awaiting_count"] = len(h["awaiting_return"])
         hub_list.append(h)
-    hub_list.sort(key=lambda x: (-(x["ready_count"] + x["awaiting_count"]), x["hub_name"]))
+    hub_list.sort(key=lambda x: (-x["ready_count"], x["hub_name"]))
 
     return {
-        "totals": {
-            "hubs": len(hub_list),
-            "ready_to_confirm": ready_total,
-            "awaiting_return": awaiting_total,
-        },
+        "totals": {"hubs": len(hub_list), "ready_to_confirm": ready_total},
         "hubs": hub_list,
     }
+
+
+async def build_return_confirmation():
+    """
+    Flat list (all warehouses combined) of Not-Serviceable PLACED orders whose
+    product has a return that is PICKED_UP or RETURNED at that warehouse. Once
+    such a return is marked RETURN_CONFIRMED, the order becomes confirmable.
+    """
+    returns_by_key = {}
+    async for r in db.returns.find(
+        {"return_status": {"$in": list(CONFIRMABLE_RETURN_STATUSES)}},
+        {"_id": 0, "product_id": 1, "owner_library": 1, "receiving_library": 1,
+         "return_order": 1, "return_status": 1},
+    ):
+        pid = r.get("product_id")
+        if not pid:
+            continue
+        info = {"return_order": r.get("return_order"), "return_status": r.get("return_status")}
+        for lib in {r.get("owner_library"), r.get("receiving_library")}:
+            if lib:
+                returns_by_key.setdefault((pid, lib), []).append(info)
+
+    orders = []
+    async for s in db.serviceable.find({}, {"_id": 0}):
+        svc = (s.get("serviceability") or "").lower()
+        if "not" not in svc and "partial" not in svc:
+            continue
+        matches = returns_by_key.get((s.get("product_id"), s.get("library_id")), [])
+        if not matches:
+            continue
+        orders.append({
+            "order_id": s.get("order_id"),
+            "product_id": s.get("product_id"),
+            "product_name": s.get("product_name"),
+            "user_name": s.get("user_name"),
+            "order_type": s.get("order_type"),
+            "library_name": s.get("library_name") or "Unassigned",
+            "library_id": s.get("library_id") or "",
+            "expected_delivery_date": s.get("expected_delivery_date"),
+            "matching_returns": matches,
+        })
+
+    orders.sort(key=lambda x: (x["library_name"], x["order_id"]))
+    return {"totals": {"orders": len(orders)}, "orders": orders}
 
 
 @api_router.get("/confirmation")
 async def get_confirmation():
     return await build_confirmation()
+
+
+@api_router.get("/return-confirmation")
+async def get_return_confirmation():
+    return await build_return_confirmation()
 
 
 
@@ -671,7 +682,7 @@ CONFIRM_AWAIT_COLUMNS = [
     ("product_id", "Product Id"),
     ("user_name", "User Name"),
     ("order_type", "Order Type"),
-    ("available_inventory", "Available Inventory"),
+    ("library_name", "Warehouse"),
     ("returns_summary", "Pending Returns To Confirm"),
 ]
 
@@ -692,24 +703,6 @@ def _write_confirmation_sheet(ws, hub):
         for ci, (key, _) in enumerate(CONFIRM_READY_COLUMNS, start=1):
             ws.cell(row=row, column=ci, value=o.get(key, ""))
         row += 1
-    row += 2
-
-    ws.cell(row=row, column=1, value=f"AWAITING RETURN CONFIRMATION ({hub['awaiting_count']})").font = SECTION_FONT
-    row += 1
-    for ci, (_, label) in enumerate(CONFIRM_AWAIT_COLUMNS, start=1):
-        c = ws.cell(row=row, column=ci, value=label)
-        c.fill = HEADER_FILL
-        c.font = HEADER_FONT
-    row += 1
-    for o in hub["awaiting_return"]:
-        summary = "; ".join(
-            f"{m.get('return_order')} ({m.get('return_status')})" for m in o.get("matching_returns", [])
-        )
-        vals = dict(o)
-        vals["returns_summary"] = summary
-        for ci, (key, _) in enumerate(CONFIRM_AWAIT_COLUMNS, start=1):
-            ws.cell(row=row, column=ci, value=vals.get(key, ""))
-        row += 1
     _autosize(ws)
 
 
@@ -726,9 +719,9 @@ def build_confirmation_workbook(conf, single_hub=None):
         ws = wb.active
         ws.title = _safe_sheet_name("Summary", used)
         ws.cell(row=1, column=1, value="ORDER CONFIRMATION PLAN").font = openpyxl.styles.Font(bold=True, size=16)
-        ws.cell(row=3, column=1, value=f"Total Hubs: {conf['totals']['hubs']}   Ready to Confirm: {conf['totals']['ready_to_confirm']}   Awaiting Return: {conf['totals']['awaiting_return']}")
+        ws.cell(row=3, column=1, value=f"Total Hubs: {conf['totals']['hubs']}   Ready to Confirm: {conf['totals']['ready_to_confirm']}")
         head_row = 5
-        for ci, label in enumerate(["Hub", "Hub Code", "Ready to Confirm", "Awaiting Return"], start=1):
+        for ci, label in enumerate(["Hub", "Hub Code", "Ready to Confirm"], start=1):
             c = ws.cell(row=head_row, column=ci, value=label)
             c.fill = HEADER_FILL
             c.font = HEADER_FONT
@@ -737,7 +730,6 @@ def build_confirmation_workbook(conf, single_hub=None):
             ws.cell(row=rr, column=1, value=h["hub_name"])
             ws.cell(row=rr, column=2, value=h.get("hub_code", ""))
             ws.cell(row=rr, column=3, value=h["ready_count"])
-            ws.cell(row=rr, column=4, value=h["awaiting_count"])
             rr += 1
         _autosize(ws)
         for h in hubs:
@@ -746,6 +738,34 @@ def build_confirmation_workbook(conf, single_hub=None):
         _write_confirmation_sheet(wb.active, hubs[0])
         wb.active.title = _safe_sheet_name(hubs[0]["hub_name"], used)
 
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def build_return_confirmation_workbook(data):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Confirm via Returns"
+    ws.cell(row=1, column=1, value="ORDERS CONFIRMABLE VIA RETURNS").font = openpyxl.styles.Font(bold=True, size=16)
+    ws.cell(row=2, column=1, value=f"Total Orders: {data['totals']['orders']}  (returns in PICKED_UP / RETURNED status)")
+    head_row = 4
+    for ci, (_, label) in enumerate(CONFIRM_AWAIT_COLUMNS, start=1):
+        c = ws.cell(row=head_row, column=ci, value=label)
+        c.fill = HEADER_FILL
+        c.font = HEADER_FONT
+    rr = head_row + 1
+    for o in data["orders"]:
+        summary = "; ".join(
+            f"{m.get('return_order')} ({m.get('return_status')})" for m in o.get("matching_returns", [])
+        )
+        vals = dict(o)
+        vals["returns_summary"] = summary
+        for ci, (key, _) in enumerate(CONFIRM_AWAIT_COLUMNS, start=1):
+            ws.cell(row=rr, column=ci, value=vals.get(key, ""))
+        rr += 1
+    _autosize(ws)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -772,6 +792,17 @@ async def export_confirmation_hub(hub: str):
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="confirmation_{safe}.xlsx"'},
+    )
+
+
+@api_router.get("/return-confirmation/export")
+async def export_return_confirmation():
+    data = await build_return_confirmation()
+    buf = build_return_confirmation_workbook(data)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="confirm_via_returns.xlsx"'},
     )
 
 
