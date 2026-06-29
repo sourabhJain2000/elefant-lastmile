@@ -530,6 +530,142 @@ async def get_return_confirmation():
     return await build_return_confirmation()
 
 
+# Returns that count as potential supply for an order (anything not yet
+# confirmed back into inventory and not a failed pickup).
+COVERABLE_RETURN_STATUSES = {"RETURN_REQUESTED", "READY_TO_PICKUP", "PICKED_UP", "RETURNED", "ARRIVED"}
+# Returns still needing a pickup action.
+PICKUP_RETURN_STATUSES = {"RETURN_REQUESTED", "READY_TO_PICKUP"}
+
+
+async def _not_serviceable_groups():
+    """Not-Serviceable PLACED orders grouped by (product_id, library_id)."""
+    groups = {}
+    async for s in db.serviceable.find({}, {"_id": 0}):
+        svc = (s.get("serviceability") or "").lower()
+        if "not" not in svc and "partial" not in svc:
+            continue
+        groups.setdefault((s.get("product_id"), s.get("library_id")), []).append(s)
+    for cand in groups.values():
+        cand.sort(key=lambda s: (s.get("delivery_date") or "9999-12-31", s.get("order_id") or ""))
+    return groups
+
+
+async def build_unallocatable(plan_date: date | None = None):
+    """
+    Orders that cannot be allotted any inventory: Not-Serviceable PLACED orders
+    that are NOT covered by any usable incoming return (no current stock and no
+    return supply). Optional expected-delivery-date filter (can be future) to
+    plan ahead. Returns supply is allocated by earliest delivery date first, and
+    everything beyond the available supply is unallocatable.
+    """
+    target_iso = (plan_date + timedelta(days=2)).isoformat() if plan_date else None
+
+    supply = {}
+    async for r in db.returns.find(
+        {"return_status": {"$in": list(COVERABLE_RETURN_STATUSES)}},
+        {"_id": 0, "product_id": 1, "owner_library": 1, "receiving_library": 1},
+    ):
+        lib = r.get("owner_library") or r.get("receiving_library")
+        pid = r.get("product_id")
+        if pid and lib:
+            supply[(pid, lib)] = supply.get((pid, lib), 0) + 1
+
+    groups = await _not_serviceable_groups()
+    out = []
+    for key, cand in groups.items():
+        sup = supply.get(key, 0)
+        for i, s in enumerate(cand):
+            if i < sup:
+                continue  # covered by available return supply
+            dd = s.get("delivery_date")
+            if target_iso is not None and (not dd or dd > target_iso):
+                continue
+            out.append({
+                "order_id": s.get("order_id"),
+                "product_id": s.get("product_id"),
+                "product_name": s.get("product_name"),
+                "user_name": s.get("user_name"),
+                "order_type": s.get("order_type"),
+                "library_name": s.get("library_name") or "Unassigned",
+                "library_id": s.get("library_id") or "",
+                "available_inventory": s.get("available_inventory", 0),
+                "expected_delivery_date": s.get("expected_delivery_date"),
+                "delivery_date": dd,
+            })
+    out.sort(key=lambda x: (x["library_name"], x.get("delivery_date") or "9999-12-31", x["order_id"]))
+    return {
+        "totals": {"orders": len(out)},
+        "plan_date": plan_date.isoformat() if plan_date else None,
+        "target_delivery_date": target_iso,
+        "orders": out,
+    }
+
+
+async def build_pickup_plan(plan_date: date, window_days: int = 5):
+    """
+    Returns still needing pickup (RETURN_REQUESTED / READY_TO_PICKUP) that are
+    required to fulfil Not-Serviceable orders due within the next `window_days`
+    days. Each pending return is allocated to the most urgent order (earliest
+    delivery date, then order number) so the team picks up what's needed first.
+    """
+    cutoff_iso = (plan_date + timedelta(days=window_days)).isoformat()
+
+    pickups = {}
+    async for r in db.returns.find(
+        {"return_status": {"$in": list(PICKUP_RETURN_STATUSES)}},
+        {"_id": 0, "product_id": 1, "owner_library": 1, "receiving_library": 1,
+         "return_order": 1, "return_status": 1, "receiving_library_name": 1, "owner_library_name": 1},
+    ):
+        lib = r.get("owner_library") or r.get("receiving_library")
+        pid = r.get("product_id")
+        if pid and lib:
+            pickups.setdefault((pid, lib), []).append(r)
+
+    groups = await _not_serviceable_groups()
+    rows = []
+    for key, cand in groups.items():
+        avail = pickups.get(key, [])
+        if not avail:
+            continue
+        near = [s for s in cand if s.get("delivery_date") and s["delivery_date"] <= cutoff_iso]
+        for i, s in enumerate(near):
+            if i >= len(avail):
+                break
+            r = avail[i]
+            rows.append({
+                "return_order": r.get("return_order"),
+                "return_status": r.get("return_status"),
+                "product_name": s.get("product_name"),
+                "library_name": s.get("library_name") or "Unassigned",
+                "library_id": s.get("library_id") or "",
+                "for_order": s.get("order_id"),
+                "user_name": s.get("user_name"),
+                "order_type": s.get("order_type"),
+                "order_delivery_date": s.get("delivery_date"),
+                "expected_delivery_date": s.get("expected_delivery_date"),
+            })
+    rows.sort(key=lambda x: (x.get("order_delivery_date") or "9999-12-31", x["for_order"]))
+    return {
+        "totals": {"pickups": len(rows)},
+        "plan_date": plan_date.isoformat(),
+        "window_days": window_days,
+        "cutoff_date": cutoff_iso,
+        "pickups": rows,
+    }
+
+
+@api_router.get("/unallocatable")
+async def get_unallocatable(date: str | None = Query(default=None)):
+    plan_date = parse_plan_date(date) if date else None
+    return await build_unallocatable(plan_date)
+
+
+@api_router.get("/pickup-plan")
+async def get_pickup_plan(date: str | None = Query(default=None)):
+    plan_date = parse_plan_date(date)
+    return await build_pickup_plan(plan_date)
+
+
 
 # ----------------------------- excel export -----------------------------
 
@@ -846,6 +982,78 @@ async def export_return_confirmation():
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="confirm_via_returns.xlsx"'},
     )
+
+
+UNALLOC_COLUMNS = [
+    ("order_id", "Order Id"),
+    ("product_name", "Product Name"),
+    ("product_id", "Product Id"),
+    ("user_name", "User Name"),
+    ("order_type", "Order Type"),
+    ("library_name", "Warehouse"),
+    ("available_inventory", "Available Inventory"),
+    ("expected_delivery_date", "Expected Delivery Date"),
+]
+
+PICKUP_COLUMNS = [
+    ("return_order", "Return Order"),
+    ("return_status", "Return Status"),
+    ("product_name", "Product Name"),
+    ("library_name", "Warehouse"),
+    ("for_order", "For Order"),
+    ("user_name", "Customer"),
+    ("expected_delivery_date", "Order Delivery Date"),
+]
+
+
+def _flat_workbook(title, header, columns, rows):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.cell(row=1, column=1, value=title).font = openpyxl.styles.Font(bold=True, size=16)
+    ws.cell(row=2, column=1, value=header)
+    hr = 4
+    for ci, (_, label) in enumerate(columns, start=1):
+        c = ws.cell(row=hr, column=ci, value=label)
+        c.fill = HEADER_FILL
+        c.font = HEADER_FONT
+    rr = hr + 1
+    for o in rows:
+        for ci, (key, _) in enumerate(columns, start=1):
+            ws.cell(row=rr, column=ci, value=o.get(key, ""))
+        rr += 1
+    _autosize(ws)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+@api_router.get("/unallocatable/export")
+async def export_unallocatable(date: str | None = Query(default=None)):
+    plan_date = parse_plan_date(date) if date else None
+    data = await build_unallocatable(plan_date)
+    hdr = f"Total: {data['totals']['orders']}" + (f"  |  Expected delivery on or before {data['target_delivery_date']}" if data.get('target_delivery_date') else "  |  All dates")
+    buf = _flat_workbook("ORDERS WITH NO INVENTORY (UNALLOCATABLE)", hdr, UNALLOC_COLUMNS, data["orders"])
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="unallocatable_orders.xlsx"'},
+    )
+
+
+@api_router.get("/pickup-plan/export")
+async def export_pickup_plan(date: str | None = Query(default=None)):
+    plan_date = parse_plan_date(date)
+    data = await build_pickup_plan(plan_date)
+    hdr = f"Total returns to pick up: {data['totals']['pickups']}  |  For orders delivering on or before {data['cutoff_date']} (next {data['window_days']} days)"
+    buf = _flat_workbook("RETURN PICKUP PLAN", hdr, PICKUP_COLUMNS, data["pickups"])
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="return_pickup_plan.xlsx"'},
+    )
+
 
 
 

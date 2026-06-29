@@ -5,6 +5,8 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import ConfirmationView from "@/ConfirmationView";
 import ReturnConfirmationView from "@/ReturnConfirmationView";
+import UnallocatableView from "@/UnallocatableView";
+import PickupPlanView from "@/PickupPlanView";
 import {
   Truck,
   ArrowsClockwise,
@@ -28,7 +30,7 @@ function TabButton({ active, onClick, testid, children }) {
     <button
       onClick={onClick}
       data-testid={testid}
-      className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+      className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors flex-shrink-0 ${
         active
           ? "border-blue-600 text-zinc-900"
           : "border-transparent text-zinc-500 hover:text-zinc-800"
@@ -420,7 +422,7 @@ function App() {
 
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-6 sm:py-8 flex flex-col gap-6">
         {syncMeta?.synced && (
-          <div className="flex items-center gap-1 border-b border-zinc-200">
+          <div className="flex items-center gap-1 border-b border-zinc-200 overflow-x-auto whitespace-nowrap">
             <TabButton active={view === "plan"} onClick={() => setView("plan")} testid="tab-plan">
               Last Mile Plan
             </TabButton>
@@ -429,6 +431,12 @@ function App() {
             </TabButton>
             <TabButton active={view === "returns"} onClick={() => setView("returns")} testid="tab-returns">
               Confirm via Returns
+            </TabButton>
+            <TabButton active={view === "unalloc"} onClick={() => setView("unalloc")} testid="tab-unalloc">
+              Unallocatable Orders
+            </TabButton>
+            <TabButton active={view === "pickup"} onClick={() => setView("pickup")} testid="tab-pickup">
+              Return Pickup Plan
             </TabButton>
           </div>
         )}
@@ -439,6 +447,14 @@ function App() {
 
         {syncMeta?.synced && view === "returns" && (
           <ReturnConfirmationView downloadFile={downloadFile} />
+        )}
+
+        {syncMeta?.synced && view === "unalloc" && (
+          <UnallocatableView downloadFile={downloadFile} />
+        )}
+
+        {syncMeta?.synced && view === "pickup" && (
+          <PickupPlanView downloadFile={downloadFile} />
         )}
 
         {/* Controls */}

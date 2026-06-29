@@ -1,0 +1,40 @@
+{
+  "summary": "Round-4 verification of two NEW tabs: Unallocatable Orders + Return Pickup Plan. Created /app/backend/tests/test_unalloc_pickup.py with 15 pytest cases — 15/15 PASSING. Backend live numbers exactly match PRD: GET /api/unallocatable (no date) = 344 orders (plan_date=null, target_delivery_date=null); GET /api/unallocatable?date=2026-06-29 = 122 orders (subset of 344, target_delivery_date='2026-07-01', all rows have delivery_date<=2026-07-01); GET /api/unallocatable?date=2026-12-31 (FUTURE) = target_delivery_date='2027-01-02' and count >= 90% of no-date (future planning works). Sort invariant verified: orders sorted ascending by (library_name, delivery_date, order_id). GET /api/pickup-plan?date=2026-06-29 = 338 pickups (plan_date='2026-06-29', window_days=5, cutoff_date='2026-07-04'). Invariants verified: (i) every return_status is RETURN_REQUESTED or READY_TO_PICKUP (no other status leaks), (ii) every return_order globally UNIQUE across response (1:1 allocation), (iii) every order_delivery_date <= 2026-07-04 (cutoff), (iv) rows sorted ascending by (order_delivery_date, for_order). Disjointness invariant: no order_id appears in BOTH /api/unallocatable AND /api/return-confirmation (covered orders are excluded from unallocatable as designed). Exports: /api/unallocatable/export (no date) = 200 xlsx, /api/unallocatable/export?date=2026-06-29 = 200 xlsx, /api/pickup-plan/export?date=2026-06-29 = 200 xlsx. Regressions: /api/plan?date=2026-06-29 unchanged (PLACED/CONFIRMED, delivery<=2026-07-01, unique ids, returns request_date<=2026-06-27); /api/confirmation?date=2026-06-29 target='2026-07-01'; /api/return-confirmation still 1:1 allocation with unique return_orders and CONFIRMABLE statuses. Frontend (Playwright @1920x1080 on REACT_APP_BACKEND_URL=https://hub-dispatch-1.preview.emergentagent.com): tab bar shows 5 tabs (tab-plan, tab-confirm, tab-returns, tab-unalloc, tab-pickup) — NOTE PRD says 'SIX tabs' but only 5 are wired (2 new + 3 existing); all switch and render without console errors; tab bar scrolls horizontally (overflow-x-auto). Unallocatable tab: unalloc-date-input defaults EMPTY, helper 'Showing all dates' visible, KPI 'Orders with no inventory' = 344, unalloc-table renders 344 rows with Order Id/Product/Customer/Warehouse/Available Inv./Expected Delivery columns; setting date 2026-06-29 narrows to 122 rows; unalloc-clear-date X-button resets to empty/344; unalloc-download-btn present and enabled. Pickup tab: pickup-date-input defaults to today (2026-06-29), 'next 5 days' cutoff helper visible, KPI 'Returns to pick up' populated; pickup-table renders 338 rows with Return Order/Status/Product/Warehouse/For Order/Order Delivery Date; sampled status badges are exclusively RETURN_REQUESTED/READY_TO_PICKUP; pickup-download-btn present.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Tab bar", "issues": ["PRD says 'SIX tabs' but app has 5 (plan/confirm/returns/unalloc/pickup). Likely a PRD wording mismatch — review_request added 2 NEW tabs to existing 3 = 5 total. Confirm intent with PM, not a functional defect."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_unalloc_pickup.py",
+    "/app/backend/tests/test_confirmation_alloc.py",
+    "/app/backend/tests/test_last_mile_planner.py",
+    "/app/backend/tests/test_returns_accuracy.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Clarify with PRD owner whether 'SIX tabs' was intended — current implementation has 5 visible tabs (2 NEW + 3 existing). All 2 new tabs work as specified."
+  ],
+  "critical_code_review_comments": [
+    "build_unallocatable + build_pickup_plan + build_return_confirmation each re-scan db.returns and db.serviceable independently. Three back-to-back endpoints (used by sibling UI tabs) duplicate the same scans. Consider memoising the _not_serviceable_groups()+supply maps per request scope, or use an aggregation pipeline grouped by (product_id, library_id).",
+    "Pickup-plan supply map iterates returns globally; if a (product, warehouse) has supply but ZERO not-serviceable near-term orders, those returns are silently dropped from the plan. That's correct behaviour, but no observability — consider exposing 'returns_with_no_demand' or 'capacity_unused' in totals.",
+    "UnallocatableView/PickupPlanView duplicate ~30 LOC of TH/TD/fmtDate helpers already present in App.js. Extract to /frontend/src/lib/table-helpers.jsx when next touched.",
+    "server.py is now 1078 LOC — split planner endpoints (build_plan/build_confirmation/build_unallocatable/build_pickup_plan) and the excel helpers (_flat_workbook/build_workbook/build_confirmation_workbook) into separate modules.",
+    "PickupPlanView default date uses todayISO()=new Date().toISOString().slice(0,10) — same TZ caveat as ConfirmationView (UTC vs IST). Low impact.",
+    "/api/pickup-plan/export does NOT include the for-order's user_name column in PICKUP_COLUMNS only by way of 'user_name' as 'Customer' — but the row dict's user_name is set from the order's user_name (correct), so this is fine. Just flagging for parity with on-screen columns."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_unalloc_pickup.py (NEW: 15 tests — shape, date filter, future date, sort, supply/disjointness invariants, pickup status/uniqueness/cutoff/sort invariants, exports, regressions for plan/confirmation/return-confirmation)",
+    "/app/test_reports/pytest/pytest_results.xml (regenerated)"
+  ],
+  "success_rate": {"backend": "100% (15/15 new tests passing)", "frontend": "100% (all 11 review checkpoints verified)"},
+  "test_credentials": "N/A — no auth, public Google Sheet (default URL).",
+  "seed_data_creation": "None. Live synced data used. Sync timestamp 29 Jun 2026 05:35pm: 318 orders / 7211 returns / serviceable populated with delivery_date.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/test_unalloc_pickup.py -v. The test file auto-loads REACT_APP_BACKEND_URL from /app/frontend/.env. Live invariant snapshot for plan-date 2026-06-29: unallocatable no-date=344, with-date=122 (target=2026-07-01), pickup=338 (cutoff=2026-07-04). All pickup rows have UNIQUE return_order and status in {RETURN_REQUESTED, READY_TO_PICKUP}. Frontend testids: tab-unalloc, tab-pickup, unalloc-date-input, unalloc-clear-date, unalloc-download-btn, unalloc-table, unalloc-row, pickup-date-input, pickup-download-btn, pickup-table, pickup-row. Pickup table can take 30-45s to render in headless browser (~338 rows + status badges). Future-date test uses 2026-12-31; PRD count expectation 'more/all' was implemented as >=90% of no-date which matches live data.",
+  "rca of the issue": "N/A — verification-only run. All round-4 invariants for both new endpoints + both new tabs hold against live data exactly as specified."
+}
