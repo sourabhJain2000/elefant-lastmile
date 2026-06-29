@@ -224,6 +224,7 @@ async def sync_sheet(body: SyncRequest):
             "user_name": clean(r.get("User Name")),
             "available_inventory": inv_num,
             "expected_delivery_date": clean(r.get("Expected Delivery Date")),
+            "delivery_date": to_date_str(r.get("Expected Delivery Date")),
             "order_placed_on": clean(r.get("Order Placed On")),
         })
 
@@ -405,11 +406,15 @@ async def get_plan(date: str | None = Query(default=None)):
 CONFIRMABLE_RETURN_STATUSES = {"PICKED_UP", "RETURNED", "ARRIVED"}
 
 
-async def build_confirmation():
+async def build_confirmation(plan_date: date | None = None):
     """
     Ready to Confirm — Fully Serviceable PLACED orders (stock available, move
     PLACED -> CONFIRMED and send to WH), grouped by warehouse (serving library).
+    When plan_date is given, only orders that need immediate review are kept:
+    those whose expected delivery date is on or before plan_date + 2 days.
     """
+    target_iso = (plan_date + timedelta(days=2)).isoformat() if plan_date else None
+
     hubs = {}
 
     def ensure(name, code):
@@ -423,6 +428,10 @@ async def build_confirmation():
     async for s in db.serviceable.find({}, {"_id": 0}):
         if "fully" not in (s.get("serviceability") or "").lower():
             continue
+        if target_iso is not None:
+            dd = s.get("delivery_date")
+            if not dd or dd > target_iso:
+                continue
         lib_name = s.get("library_name") or "Unassigned"
         ensure(lib_name, s.get("library_id") or "")["ready_to_confirm"].append({
             "order_id": s.get("order_id"),
@@ -444,16 +453,22 @@ async def build_confirmation():
 
     return {
         "totals": {"hubs": len(hub_list), "ready_to_confirm": ready_total},
+        "plan_date": plan_date.isoformat() if plan_date else None,
+        "target_delivery_date": target_iso,
         "hubs": hub_list,
     }
 
 
 async def build_return_confirmation():
     """
-    Flat list (all warehouses combined) of Not-Serviceable PLACED orders whose
-    product has a return that is PICKED_UP or RETURNED at that warehouse. Once
-    such a return is marked RETURN_CONFIRMED, the order becomes confirmable.
+    Flat list of Not-Serviceable PLACED orders that can be fulfilled by an
+    incoming return (PICKED_UP / RETURNED / ARRIVED) of the same product at the
+    same warehouse. Return quantity is LIMITED, so it is allocated 1:1 to orders
+    prioritised by scheduled delivery date (earliest first), then order number.
+    Orders beyond the available return quantity are not listed.
     """
+    # Available returns per (product, warehouse). A return restocks its home
+    # (owner) library; fall back to the receiving library when owner is blank.
     returns_by_key = {}
     async for r in db.returns.find(
         {"return_status": {"$in": list(CONFIRMABLE_RETURN_STATUSES)}},
@@ -461,40 +476,53 @@ async def build_return_confirmation():
          "return_order": 1, "return_status": 1},
     ):
         pid = r.get("product_id")
-        if not pid:
+        lib = r.get("owner_library") or r.get("receiving_library")
+        if not pid or not lib:
             continue
-        info = {"return_order": r.get("return_order"), "return_status": r.get("return_status")}
-        for lib in {r.get("owner_library"), r.get("receiving_library")}:
-            if lib:
-                returns_by_key.setdefault((pid, lib), []).append(info)
+        returns_by_key.setdefault((pid, lib), []).append(
+            {"return_order": r.get("return_order"), "return_status": r.get("return_status")}
+        )
 
-    orders = []
+    # Candidate not-serviceable PLACED orders grouped per (product, warehouse).
+    orders_by_key = {}
     async for s in db.serviceable.find({}, {"_id": 0}):
         svc = (s.get("serviceability") or "").lower()
         if "not" not in svc and "partial" not in svc:
             continue
-        matches = returns_by_key.get((s.get("product_id"), s.get("library_id")), [])
-        if not matches:
+        key = (s.get("product_id"), s.get("library_id"))
+        if key not in returns_by_key:
             continue
-        orders.append({
-            "order_id": s.get("order_id"),
-            "product_id": s.get("product_id"),
-            "product_name": s.get("product_name"),
-            "user_name": s.get("user_name"),
-            "order_type": s.get("order_type"),
-            "library_name": s.get("library_name") or "Unassigned",
-            "library_id": s.get("library_id") or "",
-            "expected_delivery_date": s.get("expected_delivery_date"),
-            "matching_returns": matches,
-        })
+        orders_by_key.setdefault(key, []).append(s)
 
-    orders.sort(key=lambda x: (x["library_name"], x["order_id"]))
-    return {"totals": {"orders": len(orders)}, "orders": orders}
+    allocated = []
+    for key, cand in orders_by_key.items():
+        avail = returns_by_key.get(key, [])
+        # Prioritise by scheduled delivery date (earliest first), then order no.
+        cand.sort(key=lambda s: (s.get("delivery_date") or "9999-12-31", s.get("order_id") or ""))
+        for i, s in enumerate(cand):
+            if i >= len(avail):
+                break  # return quantity exhausted for this product at this WH
+            allocated.append({
+                "order_id": s.get("order_id"),
+                "product_id": s.get("product_id"),
+                "product_name": s.get("product_name"),
+                "user_name": s.get("user_name"),
+                "order_type": s.get("order_type"),
+                "library_name": s.get("library_name") or "Unassigned",
+                "library_id": s.get("library_id") or "",
+                "expected_delivery_date": s.get("expected_delivery_date"),
+                "delivery_date": s.get("delivery_date"),
+                "matching_returns": [avail[i]],
+            })
+
+    allocated.sort(key=lambda x: (x["library_name"], x.get("delivery_date") or "9999-12-31", x["order_id"]))
+    return {"totals": {"orders": len(allocated)}, "orders": allocated}
 
 
 @api_router.get("/confirmation")
-async def get_confirmation():
-    return await build_confirmation()
+async def get_confirmation(date: str | None = Query(default=None)):
+    plan_date = parse_plan_date(date) if date else None
+    return await build_confirmation(plan_date)
 
 
 @api_router.get("/return-confirmation")
@@ -785,8 +813,9 @@ def build_return_confirmation_workbook(data):
 
 
 @api_router.get("/confirmation/export")
-async def export_confirmation():
-    conf = await build_confirmation()
+async def export_confirmation(date: str | None = Query(default=None)):
+    plan_date = parse_plan_date(date) if date else None
+    conf = await build_confirmation(plan_date)
     buf = build_confirmation_workbook(conf)
     return StreamingResponse(
         buf,
@@ -796,8 +825,9 @@ async def export_confirmation():
 
 
 @api_router.get("/confirmation/export/hub")
-async def export_confirmation_hub(hub: str):
-    conf = await build_confirmation()
+async def export_confirmation_hub(hub: str, date: str | None = Query(default=None)):
+    plan_date = parse_plan_date(date) if date else None
+    conf = await build_confirmation(plan_date)
     buf = build_confirmation_workbook(conf, single_hub=hub)
     safe = re.sub(r"[^A-Za-z0-9]+", "_", hub).strip("_")
     return StreamingResponse(

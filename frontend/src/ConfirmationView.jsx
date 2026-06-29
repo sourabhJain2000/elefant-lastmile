@@ -7,10 +7,13 @@ import {
   CheckCircle,
   Spinner,
   PaperPlaneTilt,
+  CalendarBlank,
 } from "@phosphor-icons/react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+const todayISO = () => new Date().toISOString().slice(0, 10);
 
 const fmtDate = (iso) => {
   if (!iso) return "—";
@@ -86,11 +89,12 @@ export default function ConfirmationView({ downloadFile }) {
   const [conf, setConf] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeHub, setActiveHub] = useState(null);
+  const [planDate, setPlanDate] = useState(todayISO());
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (date) => {
     setLoading(true);
     try {
-      const { data } = await axios.get(`${API}/confirmation`);
+      const { data } = await axios.get(`${API}/confirmation`, { params: { date } });
       setConf(data);
       setActiveHub((prev) => {
         if (prev && data.hubs.some((h) => h.hub_name === prev)) return prev;
@@ -105,15 +109,15 @@ export default function ConfirmationView({ downloadFile }) {
   }, []);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    load(planDate);
+  }, [load, planDate]);
 
   const current = conf?.hubs?.find((h) => h.hub_name === activeHub) || null;
 
   const downloadAll = () =>
-    downloadFile(`${API}/confirmation/export`, "order_confirmation_plan.xlsx");
+    downloadFile(`${API}/confirmation/export?date=${planDate}`, "order_confirmation_plan.xlsx");
   const downloadHub = (hub) =>
-    downloadFile(`${API}/confirmation/export/hub?hub=${encodeURIComponent(hub)}`, `confirmation_${hub}.xlsx`);
+    downloadFile(`${API}/confirmation/export/hub?hub=${encodeURIComponent(hub)}&date=${planDate}`, `confirmation_${hub}.xlsx`);
 
   return (
     <div className="flex flex-col gap-6">
@@ -132,6 +136,31 @@ export default function ConfirmationView({ downloadFile }) {
         >
           <DownloadSimple size={18} weight="bold" /> Download All Hubs (Excel)
         </button>
+      </div>
+
+      <div className="bg-white border border-zinc-200 rounded-sm shadow-sm p-4 sm:p-5 flex flex-col sm:flex-row sm:items-end gap-4">
+        <div className="flex flex-col gap-1.5">
+          <label className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">Plan Date</label>
+          <div className="flex items-center gap-2 border border-zinc-300 rounded-sm px-3 py-2 bg-white">
+            <CalendarBlank size={18} className="text-zinc-500" />
+            <input
+              type="date"
+              value={planDate}
+              onChange={(e) => setPlanDate(e.target.value)}
+              className="text-sm font-mono text-zinc-900 focus:outline-none bg-transparent"
+              data-testid="conf-plan-date-input"
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-sm bg-emerald-50 border border-emerald-200">
+          <PaperPlaneTilt size={18} className="text-emerald-600" weight="bold" />
+          <div className="leading-tight">
+            <p className="text-[11px] text-emerald-700 uppercase tracking-wider font-semibold">
+              Review orders delivering by (within +2 days)
+            </p>
+            <p className="text-sm font-mono text-emerald-900">{fmtDate(conf?.target_delivery_date)}</p>
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

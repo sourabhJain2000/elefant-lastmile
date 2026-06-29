@@ -1,0 +1,33 @@
+{
+  "summary": "Verified hub-wise last-mile planner round-3 changes against live preview: (a) /api/confirmation date-filter and (b) Confirm-via-Returns 1:1 allocation. New pytest suite /app/backend/tests/test_confirmation_alloc.py — 10/10 PASSING. Backend live numbers match expected: GET /api/confirmation no-date = 558 ready_to_confirm across 18 hubs (plan_date=null, target_delivery_date=null); GET /api/confirmation?date=2026-06-29 = 233 ready (target_delivery_date=2026-07-01), strictly less than 558. Confirmed every ready order with a date filter has expected_delivery_date <= 2026-07-01 (no leakage). Exports: /api/confirmation/export?date=2026-06-29 -> 200 xlsx, /api/confirmation/export/hub?hub=Yogita's Toy Library&date=2026-06-29 -> 200. GET /api/return-confirmation = 180 orders; invariants verified: (i) every order has exactly ONE matching_returns element (1:1 allocation), (ii) every return_order globally unique across all listed orders (no return used twice), (iii) per (library_name, product_id) group: |orders|==|returns| and all returns distinct, (iv) orders within a group are sorted by (delivery_date asc, order_id asc). Specifically verified the user's example: 'Dreamy Scooter' at 'Ahmedabad HUB' shows EXACTLY 2 orders — OR142545 (dd=2026-06-29, RT236571) and OR143069 (dd=2026-06-30, RT233216) — earliest-first ordering, each with one distinct return. /api/return-confirmation/export -> 200 xlsx. Regression GET /api/plan?date=2026-06-29 unchanged: order_status in PLACED/CONFIRMED, delivery_date<=2026-07-01, unique order_ids; returns filtered to RETURN_REQUESTED with request_date<=2026-06-27 (return_request_date='2026-06-27', target='2026-07-01'). Frontend (Playwright @1920x1080): Order Confirmation tab (data-testid=tab-confirm) renders Plan Date input (data-testid=conf-plan-date-input) defaulting to today (2026-06-29); helper chip 'REVIEW ORDERS DELIVERING BY (WITHIN +2 DAYS) 01 Jul 2026' visible; 'READY TO CONFIRM' KPI = 233; ready-table renders; Warehouses sidebar shows 14 hubs (filtered universe) including Yogita's Toy Library (42 ready). Confirm via Returns tab (data-testid=tab-returns) renders rc-table with column header 'Assigned Return' (CSS-uppercased in DOM to 'ASSIGNED RETURN'); first 30 rc-row elements each contain exactly one return chip; description text contains 'earliest scheduled delivery date' and 'order number'.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_confirmation_alloc.py",
+    "/app/backend/tests/test_last_mile_planner.py",
+    "/app/backend/tests/test_returns_accuracy.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "build_return_confirmation rebuilds returns_by_key and orders_by_key by scanning all of db.returns and db.serviceable each call (~180+ groups, ~7k returns). Acceptable now but as data grows consider an aggregation pipeline or compound index on (product_id, owner_library/receiving_library, return_status).",
+    "build_confirmation date-filter does string comparison on dd > target_iso which works because delivery_date is now stored as YYYY-MM-DD ISO via to_date_str — but rows with empty/None delivery_date (sync parse failures) are silently DROPPED when a date is passed. This is the right behaviour for 'immediate review', but worth documenting; consider counting/exposing 'skipped_no_date' in totals for observability.",
+    "server.py still 871 LOC — _autosize/_write_*_sheet/HEADER_FILL patterns are repeated four times. Extract excel/* helpers when next change touches exports.",
+    "ConfirmationView.jsx default date uses local-time todayISO() (new Date().toISOString().slice(0,10)) — at UTC midnight a user in IST may see tomorrow's date. Low impact, but consider a tz-aware default."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_confirmation_alloc.py (NEW: 10 tests — confirmation date-filter, return 1:1 allocation, group invariant, exports, plan regression)",
+    "/app/test_reports/pytest/pytest_results.xml (regenerated)"
+  ],
+  "success_rate": {"backend": "100% (10/10 new + previously-passing suites untouched)", "frontend": "100% (all 9 review checkpoints verified)"},
+  "test_credentials": "N/A — no auth, public Google Sheet (default URL)",
+  "seed_data_creation": "None. Used already-synced live data: orders 2556, serviceable 1668 (with delivery_date populated), returns 7211. Sync ran at 29 Jun 05:35 pm.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/ -v. test_confirmation_alloc.py auto-loads REACT_APP_BACKEND_URL from /app/frontend/.env if not in env. Key invariants encoded: (a) no-date ready_to_confirm > date-filtered (today 558 vs 233 @ 2026-06-29); (b) date-filtered orders all have expected_delivery_date <= plan_date+2; (c) every return-confirmation order has exactly 1 matching_returns; (d) every return_order used at most once globally; (e) per (library,product) group orders sorted by (delivery_date, order_id). Live invariant snapshot — Dreamy Scooter @ Ahmedabad HUB: exactly 2 orders OR142545 (RT236571) + OR143069 (RT233216).",
+  "rca of the issue": "N/A — verification-only run. All round-3 invariants (confirmation date filter + 1:1 return allocation) hold against live data."
+}

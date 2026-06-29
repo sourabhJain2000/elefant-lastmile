@@ -58,8 +58,8 @@ export default function ReturnConfirmationView({ downloadFile }) {
         <div>
           <h2 className="font-heading text-lg font-bold tracking-tight text-zinc-900">Confirm via Returns</h2>
           <p className="text-sm text-zinc-500 max-w-2xl">
-            PLACED orders whose toy has a return currently in <strong>PICKED_UP</strong>, <strong>RETURNED</strong> or <strong>ARRIVED</strong> status
-            at that warehouse. These become confirmable once the listed return(s) are marked RETURN_CONFIRMED.
+            Not-serviceable PLACED orders matched to an incoming return (<strong>PICKED_UP</strong>, <strong>RETURNED</strong> or <strong>ARRIVED</strong>)
+            of the same toy at that warehouse. Limited return quantity is allocated to orders by earliest scheduled delivery date, then order number.
           </p>
         </div>
         <button
@@ -96,7 +96,7 @@ export default function ReturnConfirmationView({ downloadFile }) {
                 <TH>Product</TH>
                 <TH>Customer</TH>
                 <TH>Warehouse</TH>
-                <TH>Pending Returns to Confirm</TH>
+                <TH>Assigned Return</TH>
               </tr>
             </thead>
             <tbody>
