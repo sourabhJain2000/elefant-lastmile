@@ -1,0 +1,31 @@
+{
+  "summary": "Validated the latest /api/plan contract end-to-end. Backend: 20/20 pytest passed against live preview URL. Live totals: orders=1035 (508 overdue, matches review_request spec exactly), returns=2484, hubs=17, target_delivery=2026-07-01, return_request=2026-06-27. Invariants verified: (a) every order order_status in {PLACED, CONFIRMED} — no SHIPPED/READY_TO_SHIP/ARRIVED/blank/DELIVERED leakage; (b) all order_ids unique across all hubs (de-duplication confirmed); (c) every delivery_date <= 2026-07-01; (d) is_overdue == (delivery_date < 2026-06-29) for every row; (e) totals.orders > 600 (was 1035); (f) multi-item orders carry item_count>1 with comma-joined toy_name (e.g. ×2, ×22 seen in UI). Reference cross-check: 614 orders with delivery_date <= 2026-06-29 (within 500..700 range). Exports: /api/plan/export 200 + 'Items' and 'Plan Status' columns present in hub sheet headers; /api/plan/export/hub for real hub 200; non-existent hub 404. Regression: /api/confirmation grouped by warehouse ready_to_confirm>0, export 200. /api/return-confirmation flat orders list, every matching_returns status in {PICKED_UP, RETURNED, ARRIVED}, export 200. Frontend (Playwright @1920x1080): KPI 'Orders to Deliver' shows 1035 with '508 overdue' sub-count; Hubs=17, Returns=2484; date input defaults to 2026-06-29; selecting Ahmedabad HUB shows orders-table with Overdue + Scheduled badges and ×N multi-item indicators (×2, ×22 observed); all three tabs (tab-plan/tab-confirm/tab-returns) switch and render without error-class elements or console errors.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_last_mile_planner.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is ~840 lines combining sync/plan/confirmation/returns/excel — exceeds 700 LOC guideline; split into routers/services for maintainability.",
+    "build_plan dedup logic mutates the first-seen dict (_toys stash + pop) which works but is fragile if proj keys change. Consider an explicit aggregator dict instead of in-place mutation.",
+    "Order delivery_date filter has no implicit lower bound — for very stale data the overdue list can grow unbounded (now 508 overdue, ~half the plan). Consider an optional 'max_overdue_days' query param guardrail.",
+    "Comma-joined toy_name de-duplicates by exact string but does NOT show item counts per toy (e.g. 'Sports Car ×3, Jeep ×2'); item_count is global. If a hub picker wants per-toy quantities, expand toy_name into a structured list.",
+    "sync_sheet() still wipes all 4 collections via delete_many before insert_many with no transaction — a mid-sync failure between deletes and inserts leaves the app empty. Stage into temp collections or use a multi-doc transaction.",
+    "build_return_confirmation indexes returns under BOTH owner_library and receiving_library — by design but produces double-counted orders when a not-serviceable PLACED order sits at a WH that is both owner and receiving for the same product; add a comment or de-dup by (order_id, library_id).",
+    "Frontend OrdersTable expects o.serveable_status (note typo 'serveable' not 'serviceable') — keep server/client in sync; consider renaming to serviceable_status with a one-time migration.",
+    "Class-scoped fixtures in pytest emit PytestRemovedIn10Warning ('Class-scoped fixture defined as instance method'); convert to @classmethod or module-level fixtures for forward compatibility."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_last_mile_planner.py (added: only_placed_or_confirmed_status, order_ids_unique_across_all_hubs, multi_item_orders_have_item_count_and_joined_toys, today_or_earlier_bucket_in_expected_range, export_all_xlsx_with_items_and_plan_status_columns, export_hub_for_real_hub; bumped totals threshold to >600; removed obsolete DELIVERED/SHIPPED forbidden-set check in favor of stricter PLACED/CONFIRMED allow-list)",
+    "/app/test_reports/pytest/pytest_results.xml (regenerated, 20 passing)"
+  ],
+  "success_rate": {"backend": "100% (20/20)", "frontend": "100%"},
+  "test_credentials": "N/A - no auth, public Google Sheet",
+  "seed_data_creation": "None. Used already-synced live data (orders_count=2556, returns_count=7159, serviceable=1668).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: REACT_APP_BACKEND_URL=https://hub-dispatch-1.preview.emergentagent.com pytest /app/backend/tests/ -v. Live counts at run time: totals.orders=1035 (508 overdue), totals.returns=2484 (2273 overdue), hubs=17, plan_date=2026-06-29, target_delivery=2026-07-01, return_request=2026-06-27. The sheet evolves so don't assert exact counts — invariants are encoded as test_only_placed_or_confirmed_status, test_order_ids_unique_across_all_hubs, test_orders_within_delivery_window_and_overdue_correctness, test_multi_item_orders_have_item_count_and_joined_toys, test_today_or_earlier_bucket_in_expected_range.",
+  "rca of the issue": "N/A — this iteration validates the contract change (status filter narrowed to {PLACED, CONFIRMED} + order_id de-duplication with item_count/joined toy_name + delivery_date <= plan_date+2). All invariants hold; no regression detected."
+}

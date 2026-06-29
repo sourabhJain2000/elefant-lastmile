@@ -310,20 +310,34 @@ async def build_plan(plan_date: date, full: bool = False):
         "hub_name": 1, "receiving_library": 1,
     }
 
-    # Orders to deliver = every not-yet-delivered/shipped order due within the
-    # planning horizon (delivery date on or before plan_date + 2 days), plus any
-    # overdue orders whose delivery date has already passed. This ensures orders
-    # due today / tomorrow are not missed (no gap between "overdue" and "+2").
+    # Orders to deliver = PLACED/CONFIRMED orders due within the planning horizon
+    # (delivery date on or before plan_date + 2 days, which also captures all
+    # overdue orders whose delivery date has already passed). De-duplicated to
+    # one row per order (an order can have multiple toy/item rows in the sheet).
     order_query = {
         "delivery_date": {"$lte": target_iso, "$ne": None},
-        "order_status": {"$nin": ["DELIVERED", "SHIPPED"]},
+        "order_status": {"$in": ["PLACED", "CONFIRMED"]},
     }
-    order_list = []
+    by_order = {}
     async for o in db.orders.find(order_query, order_proj if order_proj else {"_id": 0}):
-        o["serveable_status"] = svc.get(o["order_id"], "")
-        o["is_overdue"] = bool(o.get("delivery_date") and o["delivery_date"] < plan_iso)
-        o["plan_status"] = "Overdue" if o["is_overdue"] else "Scheduled"
-        order_list.append(o)
+        oid = o.get("order_id")
+        existing = by_order.get(oid)
+        if existing is None:
+            o["serveable_status"] = svc.get(oid, "")
+            o["is_overdue"] = bool(o.get("delivery_date") and o["delivery_date"] < plan_iso)
+            o["plan_status"] = "Overdue" if o["is_overdue"] else "Scheduled"
+            o["_toys"] = [o.get("toy_name")] if o.get("toy_name") else []
+            o["item_count"] = 1
+            by_order[oid] = o
+        else:
+            existing["item_count"] += 1
+            if o.get("toy_name"):
+                existing["_toys"].append(o.get("toy_name"))
+    order_list = list(by_order.values())
+    for o in order_list:
+        toys = list(dict.fromkeys(o.pop("_toys", [])))
+        if toys:
+            o["toy_name"] = ", ".join(toys)
     order_list.sort(key=lambda x: (not x["is_overdue"], x.get("delivery_date") or "9999"))
 
     # Returns (RETURN_REQUESTED): scheduled (requested exactly 2 days ago) +
@@ -495,6 +509,7 @@ ORDER_COLUMNS = [
     ("order_id", "Order Id"),
     ("plan_status", "Plan Status"),
     ("toy_name", "Toy Name"),
+    ("item_count", "Items"),
     ("toy_type", "Toy Type"),
     ("user_name", "User Name"),
     ("pincode", "Pincode"),

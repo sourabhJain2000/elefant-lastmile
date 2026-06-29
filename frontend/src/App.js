@@ -171,7 +171,12 @@ function OrdersTable({ orders }) {
             >
               <TD mono>{o.order_id}</TD>
               <TD><OverdueBadge overdue={o.is_overdue} /></TD>
-              <TD>{o.toy_name}</TD>
+              <TD>
+                {o.toy_name}
+                {o.item_count > 1 && (
+                  <span className="ml-1.5 text-[11px] font-mono text-zinc-400">×{o.item_count}</span>
+                )}
+              </TD>
               <TD>{o.toy_type}</TD>
               <TD>{o.user_name || "—"}</TD>
               <TD mono>{o.pincode || "—"}</TD>

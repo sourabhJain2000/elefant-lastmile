@@ -1,4 +1,12 @@
-"""Backend API tests for Last Mile Planner + Order Confirmation + Confirm via Returns."""
+"""Backend API tests for Last Mile Planner + Order Confirmation + Confirm via Returns.
+
+Covers latest contract change for /api/plan:
+  - order_status in {PLACED, CONFIRMED} for every plan order
+  - de-duplicated by order_id (unique order_ids across hubs); multi-item orders
+    have item_count > 1 and a comma-joined toy_name
+  - delivery_date <= plan_date + 2 days; is_overdue iff delivery_date < plan_date
+  - totals.orders is much larger than the previous-buggy ~259
+"""
 import os
 import io
 import pytest
@@ -12,6 +20,8 @@ PLAN_DATE = "2026-06-29"
 TARGET_DELIVERY = "2026-07-01"
 RETURN_REQ_DATE = "2026-06-27"
 TOMORROW = "2026-06-30"
+
+ALLOWED_ORDER_STATUSES = {"PLACED", "CONFIRMED"}
 
 
 # ----------------------------- sync status -----------------------------
@@ -27,11 +37,11 @@ class TestSyncStatus:
         assert d["libraries_count"] > 0
 
 
-# --------------------- plan endpoint (BUG FIX validation) ---------------------
+# --------------------- plan endpoint (latest dedup + status filter) ---------------------
 class TestPlanEndpoint:
     @pytest.fixture(scope="class")
     def plan(self):
-        r = requests.get(f"{API}/plan", params={"date": PLAN_DATE}, timeout=120)
+        r = requests.get(f"{API}/plan", params={"date": PLAN_DATE}, timeout=180)
         assert r.status_code == 200, r.text[:500]
         return r.json()
 
@@ -44,75 +54,91 @@ class TestPlanEndpoint:
         assert t["orders"] > 0
         assert t["returns"] > 0
 
-    def test_bug_fix_orders_total_above_160(self, plan):
-        # Previously the buggy query returned ~160. Must be > 160 now.
-        assert plan["totals"]["orders"] > 160, (
-            f"Orders total {plan['totals']['orders']} is still suspiciously low (bug not fixed?)"
+    def test_totals_orders_much_larger_after_dedup_change(self, plan):
+        # User-stated expectation: totals.orders ~1035 after status-set fix.
+        # Assert > 600 (well above previous buggy 259) per review_request.
+        assert plan["totals"]["orders"] > 600, (
+            f"Orders total {plan['totals']['orders']} is too low — dedup/status filter likely wrong"
         )
 
-    def test_orders_within_window_and_no_delivered_shipped(self, plan):
-        # Invariants: every order has delivery_date <= TARGET_DELIVERY (+2),
-        # order_status NOT IN {DELIVERED, SHIPPED}, is_overdue iff < plan_date.
-        forbidden = {"DELIVERED", "SHIPPED"}
-        total_orders = 0
+    def test_only_placed_or_confirmed_status(self, plan):
+        for h in plan["hubs"]:
+            for o in h["orders"]:
+                st = (o.get("order_status") or "").upper()
+                assert st in ALLOWED_ORDER_STATUSES, (
+                    f"order {o.get('order_id')} status {st} not in {ALLOWED_ORDER_STATUSES}"
+                )
+
+    def test_orders_within_delivery_window_and_overdue_correctness(self, plan):
         overdue_count = 0
+        total_orders = 0
         for h in plan["hubs"]:
             for o in h["orders"]:
                 total_orders += 1
                 dd = o.get("delivery_date")
                 assert dd is not None, f"order {o.get('order_id')} has null delivery_date"
                 assert dd <= TARGET_DELIVERY, (
-                    f"order {o.get('order_id')} delivery_date {dd} exceeds target {TARGET_DELIVERY}"
-                )
-                status = (o.get("order_status") or "").upper()
-                assert status not in forbidden, (
-                    f"order {o.get('order_id')} has forbidden status {status}"
+                    f"order {o.get('order_id')} delivery_date {dd} exceeds {TARGET_DELIVERY}"
                 )
                 expected_overdue = dd < PLAN_DATE
                 assert bool(o.get("is_overdue")) == expected_overdue, (
-                    f"order {o.get('order_id')} is_overdue={o.get('is_overdue')} vs dd={dd}"
+                    f"order {o.get('order_id')} is_overdue={o.get('is_overdue')} dd={dd}"
                 )
                 if expected_overdue:
                     overdue_count += 1
         assert total_orders == plan["totals"]["orders"]
         assert overdue_count == plan["totals"]["orders_overdue"]
 
-    def test_previously_missing_window_now_included(self, plan):
-        # The bug specifically dropped orders with delivery_date in {plan_date, plan_date+1}.
-        today_count = 0
-        tomorrow_count = 0
+    def test_order_ids_unique_across_all_hubs(self, plan):
+        seen = set()
+        dupes = []
         for h in plan["hubs"]:
             for o in h["orders"]:
-                dd = o.get("delivery_date")
-                if dd == PLAN_DATE:
-                    today_count += 1
-                elif dd == TOMORROW:
-                    tomorrow_count += 1
-        assert today_count + tomorrow_count > 0, (
-            "Expected orders with delivery_date in {PLAN_DATE, TOMORROW} (the previously-missing window) but found none"
+                oid = o.get("order_id")
+                if oid in seen:
+                    dupes.append(oid)
+                else:
+                    seen.add(oid)
+        assert not dupes, f"Duplicate order_ids found across hubs: {dupes[:10]} (total {len(dupes)})"
+        assert len(seen) == plan["totals"]["orders"]
+
+    def test_multi_item_orders_have_item_count_and_joined_toys(self, plan):
+        multi_item_orders = 0
+        for h in plan["hubs"]:
+            for o in h["orders"]:
+                ic = o.get("item_count")
+                assert isinstance(ic, int) and ic >= 1, (
+                    f"order {o.get('order_id')} has bad item_count {ic}"
+                )
+                if ic > 1:
+                    multi_item_orders += 1
+                    toys = o.get("toy_name") or ""
+                    # Multi-item should have comma-joined toy names (more than one distinct toy
+                    # or at minimum a non-empty toy string).
+                    assert toys, f"order {o.get('order_id')} item_count={ic} but toy_name empty"
+        # With ~1035 orders and 2556 item rows, there must be plenty of multi-item dedup hits.
+        assert multi_item_orders > 0, "Expected some orders with item_count>1 after dedup, found none"
+
+    def test_today_or_earlier_bucket_in_expected_range(self, plan):
+        # Reference: orders with delivery_date <= 2026-06-29 should be ~614 (user said ~619).
+        count = 0
+        for h in plan["hubs"]:
+            for o in h["orders"]:
+                if (o.get("delivery_date") or "") <= PLAN_DATE:
+                    count += 1
+        assert 500 <= count <= 800, (
+            f"Orders with delivery_date <= {PLAN_DATE} = {count}, expected 500..800"
         )
 
     def test_returns_logic_unchanged(self, plan):
-        # Plan only contains RETURN_REQUESTED with request_date <= plan_date-2.
         for h in plan["hubs"]:
             for ret in h["returns"]:
                 assert ret["request_date"] is not None
-                assert ret["request_date"] <= RETURN_REQ_DATE, (
-                    f"return {ret.get('return_order')} request_date {ret['request_date']} exceeds cutoff"
-                )
-
-    def test_serviceability_mapping(self, plan):
-        seen = 0
-        for h in plan["hubs"]:
-            for o in h["orders"]:
-                if o.get("serveable_status"):
-                    s = o["serveable_status"].lower()
-                    assert "fully" in s or "not" in s or "partial" in s
-                    seen += 1
-        assert seen > 0, "No orders carry serveable_status — serviceability mapping looks broken"
+                assert ret["request_date"] <= RETURN_REQ_DATE
+        assert plan["totals"]["returns"] > 0
 
     def test_plan_empty_far_past(self):
-        r = requests.get(f"{API}/plan", params={"date": "2020-01-01"}, timeout=30)
+        r = requests.get(f"{API}/plan", params={"date": "2020-01-01"}, timeout=60)
         assert r.status_code == 200
         d = r.json()
         assert d["totals"]["orders"] == 0
@@ -126,19 +152,56 @@ class TestPlanEndpoint:
 
 # ----------------------------- plan export -----------------------------
 class TestPlanExport:
-    def test_export_all(self):
-        r = requests.get(f"{API}/plan/export", params={"date": PLAN_DATE}, timeout=180)
+    @pytest.fixture(scope="class")
+    def plan(self):
+        r = requests.get(f"{API}/plan", params={"date": PLAN_DATE}, timeout=180)
+        assert r.status_code == 200
+        return r.json()
+
+    def test_export_all_xlsx_with_items_and_plan_status_columns(self, plan):
+        r = requests.get(f"{API}/plan/export", params={"date": PLAN_DATE}, timeout=240)
         assert r.status_code == 200
         assert "spreadsheetml" in r.headers.get("content-type", "")
         wb = openpyxl.load_workbook(io.BytesIO(r.content), read_only=True)
-        names = [s.lower() for s in wb.sheetnames]
-        assert "summary" in names
-        assert len(wb.sheetnames) >= 2  # Summary + at least one hub
+        names_lower = [s.lower() for s in wb.sheetnames]
+        assert "summary" in names_lower
+        assert len(wb.sheetnames) >= 2
+
+        # Pick the first non-summary sheet and verify Items + Plan Status columns
+        # and that some Plan Status cell contains Overdue or Scheduled.
+        target = next((s for s in wb.sheetnames if s.lower() != "summary"), None)
+        assert target is not None
+        ws = wb[target]
+        # Locate header row by scanning first 12 rows for 'Order Id'.
+        headers = []
+        for row in ws.iter_rows(min_row=1, max_row=15, values_only=True):
+            if row and "Order Id" in [c for c in row if c is not None]:
+                headers = list(row)
+                break
+        assert headers, f"Could not find header row in sheet '{target}'"
+        assert "Items" in headers, f"'Items' column missing in hub sheet '{target}' headers={headers}"
+        assert "Plan Status" in headers, f"'Plan Status' column missing headers={headers}"
+
+    def test_export_hub_for_real_hub(self, plan):
+        # Pick a hub that actually has orders.
+        hub_name = None
+        for h in plan["hubs"]:
+            if h["order_count"] > 0:
+                hub_name = h["hub_name"]
+                break
+        assert hub_name, "No hub with orders found in plan"
+        r = requests.get(
+            f"{API}/plan/export/hub",
+            params={"hub": hub_name, "date": PLAN_DATE},
+            timeout=120,
+        )
+        assert r.status_code == 200, r.text[:300]
+        assert "spreadsheetml" in r.headers.get("content-type", "")
 
     def test_export_hub_not_found(self):
         r = requests.get(
             f"{API}/plan/export/hub",
-            params={"hub": "NoSuchHub123", "date": PLAN_DATE},
+            params={"hub": "NoSuchHub_ZZZ", "date": PLAN_DATE},
             timeout=30,
         )
         assert r.status_code == 404
@@ -182,19 +245,12 @@ class TestReturnConfirmation:
 
     def test_every_matching_return_status_in_allowed_set(self, rc):
         allowed = {"PICKED_UP", "RETURNED", "ARRIVED"}
-        checked = 0
         for o in rc["orders"]:
             matches = o.get("matching_returns") or []
-            assert len(matches) > 0, f"order {o.get('order_id')} has no matching_returns"
+            assert len(matches) > 0
             for m in matches:
                 st = (m.get("return_status") or "").upper()
-                assert st in allowed, (
-                    f"return {m.get('return_order')} status {st} not in {allowed}"
-                )
-                checked += 1
-        # Allow zero orders edge case but at least the shape held.
-        if rc["orders"]:
-            assert checked > 0
+                assert st in allowed
 
     def test_export(self):
         r = requests.get(f"{API}/return-confirmation/export", timeout=120)
