@@ -29,9 +29,17 @@ Plan last-mile orders daily, hub-wise, from a Google Sheet (Orders, Pending Retu
 - Excel export: all-hubs (Summary + per-hub sheets) and single-hub.
 - Status/serviceable badges, KPIs, date picker, sync status display.
 
+## Implemented (2026-06-29)
+- Overdue orders (delivery date passed & not delivered/shipped) and overdue returns (request date passed) now included in the Last Mile Plan, with Overdue badges; Expected Delivery column added on screen.
+- Corrected serviceability mapping to the live sheet's new schema (Order Number → Serviceability: Fully/Not Serviceable, Available Inventory).
+- NEW "Order Confirmation" tab with two warehouse-grouped lists:
+  1. Ready to Confirm → Send to WH: Fully-Serviceable PLACED orders.
+  2. Awaiting Return Confirmation: Not-Serviceable PLACED orders whose product has a pending (non-RETURN_CONFIRMED) return coming back to that warehouse — confirmable once that return is confirmed. Matched by product_id + library (owner/receiving).
+- Excel exports for confirmation: all-warehouses (Summary + per-WH sheets) and single-WH.
+- Endpoints: GET /api/confirmation, /api/confirmation/export, /api/confirmation/export/hub.
+
 ## Backlog / Next
-- P1: Persisted scheduled auto-sync (cron) so data refreshes daily without manual click.
-- P1: Use Users Master lat/long + Library lat/long for route optimization / distance grouping.
-- P2: Filters (toy type, force/pre-order, serviceable only), search within hub.
-- P2: Configurable "days in advance" instead of fixed 2.
-- P2: Print-friendly per-hub view for delivery agents.
+- P1: Persisted scheduled auto-sync (cron) so data refreshes daily.
+- P1: Atomic sync (stage into temp collections) to avoid data loss on mid-sync fetch failure.
+- P2: Server-side warehouse filtering/pagination for /api/confirmation (payload ~1MB).
+- P2: Cap "overdue window" option; slugify hub test ids; split server.py into routers.
