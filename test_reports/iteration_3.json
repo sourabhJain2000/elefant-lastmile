@@ -1,0 +1,29 @@
+{
+  "summary": "Validated the build_plan bug fix end-to-end. Backend: 17/17 pytest tests passed against the live preview URL — GET /api/plan?date=2026-06-29 now returns totals.orders=259 (orders_overdue=131), well above the previously-buggy 160. Asserted invariants: every order has delivery_date <= 2026-07-01 (+2 target), order_status NOT IN {DELIVERED, SHIPPED}, is_overdue is true iff delivery_date < 2026-06-29, and the previously-missing window (delivery_date in {2026-06-29, 2026-06-30}) is now populated. Returns logic unchanged (only RETURN_REQUESTED with request_date <= 2026-06-27). Excel exports (/api/plan/export, /api/confirmation/export, /api/return-confirmation/export) all return valid xlsx (200). /api/return-confirmation flat orders list — every matching return status ∈ {PICKED_UP, RETURNED, ARRIVED}. /api/confirmation grouped by warehouse with ready_to_confirm > 0. Frontend (Playwright @1920x1080): default plan date 2026-06-29 shows KPI 'Orders to Deliver' = 259 with sub '131 overdue'; blue helper chip text reads 'Deliveries due by (within +2 days) + overdue'; orders-table renders Overdue + Scheduled badges (632 overdue, 56 scheduled across selected hub views); returns-table renders; tab-plan / tab-confirm / tab-returns all switch and render without page errors or error-class elements.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_last_mile_planner.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is ~825 lines combining sync/plan/confirmation/returns/excel — exceeds 700 LOC guideline; split into routers/services for maintainability.",
+    "build_plan order_query filters by order_status NOT IN [DELIVERED, SHIPPED] — note that SHIPPED orders due today are now silently excluded. If the business intent for the 'last mile plan' is 'dispatch them today' vs 'pick them at WH', it may be worth surfacing SHIPPED-but-not-yet-delivered orders too with a different plan_status badge instead of dropping them.",
+    "Order delivery_date filter uses {'$lte': target_iso, '$ne': None} — fine, but the lower bound is implicit (any past date qualifies). For very stale data the overdue list can grow unbounded; consider an optional 'max_overdue_days' guardrail surfaced via query param.",
+    "sync_sheet() still wipes all 4 collections via delete_many before insert_many with no transaction — a mid-sync failure between deletes and inserts leaves the app empty. Stage into temp collections or use a multi-doc transaction.",
+    "build_return_confirmation indexes returns under BOTH owner_library and receiving_library — by design (return coming back to either WH) but produces double-counted orders when a not-serviceable PLACED order sits at a WH that is both owner and receiving for the same product; add a comment or de-dup by (order_id, library_id).",
+    "Frontend OrdersTable expects o.serveable_status (note typo 'serveable' not 'serviceable') — keep server/client in sync; consider renaming to serviceable_status with a one-time migration."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_last_mile_planner.py (rewritten for the new endpoint shape: removed obsolete awaiting_return assertions, added bug-fix invariants — totals.orders > 160, delivery_date window, is_overdue correctness, previously-missing today/tomorrow rows, RETURN_CONFIRMATION endpoint ARRIVED support)",
+    "/app/test_reports/pytest/pytest_results.xml (regenerated, 17 passing)"
+  ],
+  "success_rate": {"backend": "100% (17/17)", "frontend": "100%"},
+  "test_credentials": "N/A - no auth, public Google Sheet",
+  "seed_data_creation": "None. Used already-synced data on live preview backend.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend tests at /app/backend/tests/test_last_mile_planner.py — run with `REACT_APP_BACKEND_URL=https://hub-dispatch-1.preview.emergentagent.com pytest /app/backend/tests/ -v`. Live counts at time of run: orders.total=259 (131 overdue), returns.total=2517 (2297 overdue), hubs=16, target_delivery=2026-07-01, return_request=2026-06-27. Don't assert exact counts — the sheet evolves. Invariants in test_orders_within_window_and_no_delivered_shipped + test_previously_missing_window_now_included capture the bug-fix contract.",
+  "rca of the issue": "Original bug: build_plan order_query was {'$or': [delivery_date == plan_date+2, delivery_date < plan_date]}, which created a gap excluding delivery_date ∈ {plan_date, plan_date+1}. Fix: query is now {'delivery_date': {'$lte': target_iso, '$ne': None}, 'order_status': {'$nin': ['DELIVERED','SHIPPED']}}, and is_overdue = delivery_date < plan_iso. Verified: totals.orders jumped from 160 to 259, the 'today/tomorrow' bucket has rows again, no order delivers after target, no DELIVERED/SHIPPED leaks through."
+}

@@ -310,16 +310,13 @@ async def build_plan(plan_date: date, full: bool = False):
         "hub_name": 1, "receiving_library": 1,
     }
 
-    # Orders: scheduled (delivery in exactly 2 days) + overdue (delivery date
-    # already passed and order is still not delivered / shipped).
+    # Orders to deliver = every not-yet-delivered/shipped order due within the
+    # planning horizon (delivery date on or before plan_date + 2 days), plus any
+    # overdue orders whose delivery date has already passed. This ensures orders
+    # due today / tomorrow are not missed (no gap between "overdue" and "+2").
     order_query = {
-        "$or": [
-            {"delivery_date": target_iso},
-            {
-                "delivery_date": {"$lt": plan_iso, "$ne": None},
-                "order_status": {"$nin": ["DELIVERED", "SHIPPED"]},
-            },
-        ]
+        "delivery_date": {"$lte": target_iso, "$ne": None},
+        "order_status": {"$nin": ["DELIVERED", "SHIPPED"]},
     }
     order_list = []
     async for o in db.orders.find(order_query, order_proj if order_proj else {"_id": 0}):

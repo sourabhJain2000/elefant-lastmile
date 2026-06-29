@@ -460,7 +460,7 @@ function App() {
               <Package size={18} className="text-blue-600" weight="bold" />
               <div className="leading-tight">
                 <p className="text-[11px] text-blue-700 uppercase tracking-wider font-semibold">
-                  Deliveries on (+2 days) + overdue
+                  Deliveries due by (within +2 days) + overdue
                 </p>
                 <p className="text-sm font-mono text-blue-900">
                   {fmtDate(plan?.target_delivery_date)}
