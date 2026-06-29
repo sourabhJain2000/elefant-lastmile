@@ -6,6 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import io
 import re
+import asyncio
 import logging
 import urllib.request
 from pathlib import Path
@@ -124,9 +125,8 @@ class SyncRequest(BaseModel):
 
 # ----------------------------- sync -----------------------------
 
-@api_router.post("/sync")
-async def sync_sheet(body: SyncRequest):
-    sheet_url = (body.sheet_url or DEFAULT_SHEET_URL).strip()
+def _parse_workbook(sheet_url: str):
+    """Blocking: download + parse the sheet into document lists."""
     sheet_id = extract_sheet_id(sheet_url)
     wb = fetch_workbook(sheet_id)
 
@@ -162,8 +162,6 @@ async def sync_sheet(body: SyncRequest):
         })
 
     # Returns: store all that are NOT yet RETURN_CONFIRMED (pipeline returns).
-    # The last-mile planner uses the RETURN_REQUESTED subset; the order
-    # confirmation view uses any pending return as potential incoming stock.
     return_docs = []
     for r in sheet_records(returns_ws):
         status = clean(r.get("Return Order Status")).upper()
@@ -236,6 +234,14 @@ async def sync_sheet(body: SyncRequest):
             "lat_long": clean(r.get("lat_long")),
         })
 
+    return order_docs, return_docs, serviceable_docs, library_docs
+
+
+async def perform_sync(sheet_url: str, trigger: str = "manual"):
+    sheet_url = (sheet_url or DEFAULT_SHEET_URL).strip()
+    # Run the heavy download + parse off the event loop.
+    order_docs, return_docs, serviceable_docs, library_docs = await asyncio.to_thread(_parse_workbook, sheet_url)
+
     await db.orders.delete_many({})
     await db.returns.delete_many({})
     await db.serviceable.delete_many({})
@@ -253,6 +259,7 @@ async def sync_sheet(body: SyncRequest):
         "_id": "sync",
         "sheet_url": sheet_url,
         "synced_at": datetime.now(timezone.utc).isoformat(),
+        "last_trigger": trigger,
         "orders_count": len(order_docs),
         "returns_count": len(return_docs),
         "serviceable_count": len(serviceable_docs),
@@ -261,6 +268,11 @@ async def sync_sheet(body: SyncRequest):
     await db.sync_meta.replace_one({"_id": "sync"}, meta, upsert=True)
     meta.pop("_id", None)
     return meta
+
+
+@api_router.post("/sync")
+async def sync_sheet(body: SyncRequest):
+    return await perform_sync(body.sheet_url or DEFAULT_SHEET_URL, trigger="manual")
 
 
 @api_router.get("/sync/status")
@@ -1062,6 +1074,24 @@ async def root():
     return {"message": "Last Mile Planner API"}
 
 
+AUTO_SYNC_INTERVAL_SECONDS = 15 * 60
+
+
+async def auto_sync_loop():
+    """Background task: re-sync the sheet every 15 minutes."""
+    while True:
+        await asyncio.sleep(AUTO_SYNC_INTERVAL_SECONDS)
+        try:
+            meta = await db.sync_meta.find_one({"_id": "sync"}, {"_id": 0, "sheet_url": 1})
+            sheet_url = (meta or {}).get("sheet_url") or DEFAULT_SHEET_URL
+            result = await perform_sync(sheet_url, trigger="auto")
+            logger.info("Auto-sync OK: %s orders, %s returns", result["orders_count"], result["returns_count"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Auto-sync failed: %s", e)
+
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -1073,6 +1103,15 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+async def start_auto_sync():
+    app.state.auto_sync_task = asyncio.create_task(auto_sync_loop())
+    logger.info("Auto-sync scheduled every %s minutes", AUTO_SYNC_INTERVAL_SECONDS // 60)
+
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    task = getattr(app.state, "auto_sync_task", None)
+    if task:
+        task.cancel()
     client.close()

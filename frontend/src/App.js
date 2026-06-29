@@ -367,7 +367,7 @@ function App() {
                     Last synced {fmtDateTime(syncMeta.synced_at)}
                   </span>
                   <span className="text-[11px] text-zinc-500 font-mono">
-                    {syncMeta.orders_count} orders · {syncMeta.returns_count} returns
+                    {syncMeta.orders_count} orders · {syncMeta.returns_count} returns · auto every 15 min
                   </span>
                 </>
               ) : (
