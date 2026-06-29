@@ -10,6 +10,7 @@ function ReturnStatusBadge({ status }) {
   const s = (status || "").toUpperCase();
   let cls = "bg-blue-50 text-blue-700 border-blue-200";
   if (s === "RETURNED") cls = "bg-emerald-50 text-emerald-700 border-emerald-200";
+  else if (s === "ARRIVED") cls = "bg-violet-50 text-violet-700 border-violet-200";
   return (
     <span className={`inline-flex items-center rounded-sm px-2 py-0.5 text-[11px] font-medium border ${cls} whitespace-nowrap`}>
       {status}
@@ -57,7 +58,7 @@ export default function ReturnConfirmationView({ downloadFile }) {
         <div>
           <h2 className="font-heading text-lg font-bold tracking-tight text-zinc-900">Confirm via Returns</h2>
           <p className="text-sm text-zinc-500 max-w-2xl">
-            PLACED orders whose toy has a return currently in <strong>PICKED_UP</strong> or <strong>RETURNED</strong> status
+            PLACED orders whose toy has a return currently in <strong>PICKED_UP</strong>, <strong>RETURNED</strong> or <strong>ARRIVED</strong> status
             at that warehouse. These become confirmable once the listed return(s) are marked RETURN_CONFIRMED.
           </p>
         </div>

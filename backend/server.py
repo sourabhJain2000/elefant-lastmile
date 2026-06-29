@@ -391,7 +391,7 @@ async def get_plan(date: str | None = Query(default=None)):
 
 # Returns considered "confirmable" — the toy has been physically collected and is
 # en route / back at the warehouse, so the return can realistically be confirmed.
-CONFIRMABLE_RETURN_STATUSES = {"PICKED_UP", "RETURNED"}
+CONFIRMABLE_RETURN_STATUSES = {"PICKED_UP", "RETURNED", "ARRIVED"}
 
 
 async def build_confirmation():
@@ -749,7 +749,7 @@ def build_return_confirmation_workbook(data):
     ws = wb.active
     ws.title = "Confirm via Returns"
     ws.cell(row=1, column=1, value="ORDERS CONFIRMABLE VIA RETURNS").font = openpyxl.styles.Font(bold=True, size=16)
-    ws.cell(row=2, column=1, value=f"Total Orders: {data['totals']['orders']}  (returns in PICKED_UP / RETURNED status)")
+    ws.cell(row=2, column=1, value=f"Total Orders: {data['totals']['orders']}  (returns in PICKED_UP / RETURNED / ARRIVED status)")
     head_row = 4
     for ci, (_, label) in enumerate(CONFIRM_AWAIT_COLUMNS, start=1):
         c = ws.cell(row=head_row, column=ci, value=label)
