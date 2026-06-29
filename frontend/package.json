@@ -65,7 +65,7 @@
   "start": "craco start",
   "build": "CI=false craco build",
   "test": "craco test"
-}
+},
   "browserslist": {
     "production": [
       ">0.2%",
