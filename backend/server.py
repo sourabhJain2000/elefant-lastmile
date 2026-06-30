@@ -2,7 +2,6 @@ from fastapi import FastAPI, APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import io
 import re
@@ -17,9 +16,14 @@ import openpyxl
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# In-memory data store (no database). Populated from the Google Sheet on sync.
+STORE = {
+    "orders": [],
+    "returns": [],
+    "serviceable": [],
+    "libraries": [],
+    "meta": None,
+}
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -242,21 +246,7 @@ async def perform_sync(sheet_url: str, trigger: str = "manual"):
     # Run the heavy download + parse off the event loop.
     order_docs, return_docs, serviceable_docs, library_docs = await asyncio.to_thread(_parse_workbook, sheet_url)
 
-    await db.orders.delete_many({})
-    await db.returns.delete_many({})
-    await db.serviceable.delete_many({})
-    await db.libraries.delete_many({})
-    if order_docs:
-        await db.orders.insert_many(order_docs)
-    if return_docs:
-        await db.returns.insert_many(return_docs)
-    if serviceable_docs:
-        await db.serviceable.insert_many(serviceable_docs)
-    if library_docs:
-        await db.libraries.insert_many(library_docs)
-
     meta = {
-        "_id": "sync",
         "sheet_url": sheet_url,
         "synced_at": datetime.now(timezone.utc).isoformat(),
         "last_trigger": trigger,
@@ -265,8 +255,11 @@ async def perform_sync(sheet_url: str, trigger: str = "manual"):
         "serviceable_count": len(serviceable_docs),
         "libraries_count": len(library_docs),
     }
-    await db.sync_meta.replace_one({"_id": "sync"}, meta, upsert=True)
-    meta.pop("_id", None)
+    STORE["orders"] = order_docs
+    STORE["returns"] = return_docs
+    STORE["serviceable"] = serviceable_docs
+    STORE["libraries"] = library_docs
+    STORE["meta"] = meta
     return meta
 
 
@@ -277,20 +270,16 @@ async def sync_sheet(body: SyncRequest):
 
 @api_router.get("/sync/status")
 async def sync_status():
-    meta = await db.sync_meta.find_one({"_id": "sync"}, {"_id": 0})
+    meta = STORE.get("meta")
     if not meta:
         return {"synced": False, "sheet_url": DEFAULT_SHEET_URL}
-    meta["synced"] = True
-    return meta
+    return {**meta, "synced": True}
 
 
 # ----------------------------- planning -----------------------------
 
-async def serviceable_map():
-    out = {}
-    async for d in db.serviceable.find({}, {"_id": 0, "order_id": 1, "serviceability": 1}):
-        out[d["order_id"]] = d.get("serviceability", "")
-    return out
+def serviceable_map():
+    return {s["order_id"]: s.get("serviceability", "") for s in STORE["serviceable"]}
 
 
 def parse_plan_date(value):
@@ -309,43 +298,33 @@ async def build_plan(plan_date: date, full: bool = False):
     target_iso = target_delivery.isoformat()
     return_iso = return_request_date.isoformat()
 
-    svc = await serviceable_map()
-
-    order_proj = None if full else {
-        "_id": 0, "order_id": 1, "toy_name": 1, "toy_type": 1, "user_name": 1,
-        "pincode": 1, "order_status": 1, "expected_delivery_date": 1, "tags": 1,
-        "delivery_date": 1, "library_name": 1, "library_id": 1,
-    }
-    return_proj = None if full else {
-        "_id": 0, "return_order": 1, "order_id": 1, "product_name": 1, "user_name": 1,
-        "pincode": 1, "owner_library_name": 1, "receiving_library_name": 1,
-        "return_created_at": 1, "toy_condition": 1, "request_date": 1,
-        "hub_name": 1, "receiving_library": 1,
-    }
+    svc = serviceable_map()
 
     # Orders to deliver = PLACED/CONFIRMED orders due within the planning horizon
     # (delivery date on or before plan_date + 2 days, which also captures all
     # overdue orders whose delivery date has already passed). De-duplicated to
     # one row per order (an order can have multiple toy/item rows in the sheet).
-    order_query = {
-        "delivery_date": {"$lte": target_iso, "$ne": None},
-        "order_status": {"$in": ["PLACED", "CONFIRMED"]},
-    }
     by_order = {}
-    async for o in db.orders.find(order_query, order_proj if order_proj else {"_id": 0}):
-        oid = o.get("order_id")
+    for src in STORE["orders"]:
+        dd = src.get("delivery_date")
+        if not dd or dd > target_iso:
+            continue
+        if src.get("order_status") not in ("PLACED", "CONFIRMED"):
+            continue
+        oid = src.get("order_id")
         existing = by_order.get(oid)
         if existing is None:
+            o = dict(src)
             o["serveable_status"] = svc.get(oid, "")
-            o["is_overdue"] = bool(o.get("delivery_date") and o["delivery_date"] < plan_iso)
+            o["is_overdue"] = bool(dd and dd < plan_iso)
             o["plan_status"] = "Overdue" if o["is_overdue"] else "Scheduled"
-            o["_toys"] = [o.get("toy_name")] if o.get("toy_name") else []
+            o["_toys"] = [src.get("toy_name")] if src.get("toy_name") else []
             o["item_count"] = 1
             by_order[oid] = o
         else:
             existing["item_count"] += 1
-            if o.get("toy_name"):
-                existing["_toys"].append(o.get("toy_name"))
+            if src.get("toy_name"):
+                existing["_toys"].append(src.get("toy_name"))
     order_list = list(by_order.values())
     for o in order_list:
         toys = list(dict.fromkeys(o.pop("_toys", [])))
@@ -353,11 +332,16 @@ async def build_plan(plan_date: date, full: bool = False):
             o["toy_name"] = ", ".join(toys)
     order_list.sort(key=lambda x: (not x["is_overdue"], x.get("delivery_date") or "9999"))
 
-    # Returns (RETURN_REQUESTED): scheduled (requested exactly 2 days ago) +
-    # overdue (requested earlier, i.e. request date + 2 days already passed).
+    # Returns (RETURN_REQUESTED): requested 2 days ago (scheduled) + earlier (overdue).
     return_list = []
-    async for r in db.returns.find({"return_status": "RETURN_REQUESTED", "request_date": {"$lte": return_iso, "$ne": None}}, return_proj if return_proj else {"_id": 0}):
-        r["is_overdue"] = bool(r.get("request_date") and r["request_date"] < return_iso)
+    for src in STORE["returns"]:
+        if src.get("return_status") != "RETURN_REQUESTED":
+            continue
+        rd = src.get("request_date")
+        if not rd or rd > return_iso:
+            continue
+        r = dict(src)
+        r["is_overdue"] = bool(rd and rd < return_iso)
         r["plan_status"] = "Overdue" if r["is_overdue"] else "Scheduled"
         return_list.append(r)
     return_list.sort(key=lambda x: (not x["is_overdue"], x.get("request_date") or "9999"))
@@ -437,7 +421,7 @@ async def build_confirmation(plan_date: date | None = None):
         return hubs[name]
 
     ready_total = 0
-    async for s in db.serviceable.find({}, {"_id": 0}):
+    for s in STORE["serviceable"]:
         if "fully" not in (s.get("serviceability") or "").lower():
             continue
         if target_iso is not None:
@@ -482,11 +466,9 @@ async def build_return_confirmation():
     # Available returns per (product, warehouse). A return restocks its home
     # (owner) library; fall back to the receiving library when owner is blank.
     returns_by_key = {}
-    async for r in db.returns.find(
-        {"return_status": {"$in": list(CONFIRMABLE_RETURN_STATUSES)}},
-        {"_id": 0, "product_id": 1, "owner_library": 1, "receiving_library": 1,
-         "return_order": 1, "return_status": 1},
-    ):
+    for r in STORE["returns"]:
+        if r.get("return_status") not in CONFIRMABLE_RETURN_STATUSES:
+            continue
         pid = r.get("product_id")
         lib = r.get("owner_library") or r.get("receiving_library")
         if not pid or not lib:
@@ -497,7 +479,7 @@ async def build_return_confirmation():
 
     # Candidate not-serviceable PLACED orders grouped per (product, warehouse).
     orders_by_key = {}
-    async for s in db.serviceable.find({}, {"_id": 0}):
+    for s in STORE["serviceable"]:
         svc = (s.get("serviceability") or "").lower()
         if "not" not in svc and "partial" not in svc:
             continue
