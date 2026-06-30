@@ -1,10 +1,8 @@
-import { useEffect, useState, useCallback } from "react";
-import axios from "axios";
-import { toast } from "sonner";
+import { useMemo, useState } from "react";
 import { DownloadSimple, Spinner, Truck, CalendarBlank, HandArrowDown } from "@phosphor-icons/react";
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { useData } from "@/lib/DataContext";
+import { buildPickupPlan } from "@/lib/plans";
+import { exportPickupPlan } from "@/lib/excel";
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -36,27 +34,12 @@ const TD = ({ children, mono }) => (
   </td>
 );
 
-export default function PickupPlanView({ downloadFile }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+export default function PickupPlanView() {
+  const { store } = useData();
   const [date, setDate] = useState(todayISO());
 
-  const load = useCallback(async (d) => {
-    setLoading(true);
-    try {
-      const { data } = await axios.get(`${API}/pickup-plan`, { params: { date: d } });
-      setData(data);
-    } catch (e) {
-      console.error(e);
-      toast.error("Could not load pickup plan");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load(date);
-  }, [load, date]);
+  const data = useMemo(() => buildPickupPlan(store, date), [store, date]);
+  const loading = false;
 
   const rows = data?.pickups || [];
 
@@ -71,7 +54,7 @@ export default function PickupPlanView({ downloadFile }) {
           </p>
         </div>
         <button
-          onClick={() => downloadFile(`${API}/pickup-plan/export?date=${date}`, "return_pickup_plan.xlsx")}
+          onClick={() => exportPickupPlan(data)}
           disabled={!rows.length}
           className="sm:ml-auto inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-sm px-4 py-2.5 text-sm font-medium transition-colors"
           data-testid="pickup-download-btn"
