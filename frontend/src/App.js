@@ -1,12 +1,13 @@
-import { useEffect, useState, useCallback } from "react";
+import { useMemo, useState } from "react";
 import "@/App.css";
-import axios from "axios";
 import { Toaster } from "@/components/ui/sonner";
-import { toast } from "sonner";
 import ConfirmationView from "@/ConfirmationView";
 import ReturnConfirmationView from "@/ReturnConfirmationView";
 import UnallocatableView from "@/UnallocatableView";
 import PickupPlanView from "@/PickupPlanView";
+import { useData } from "@/lib/DataContext";
+import { buildPlan } from "@/lib/plans";
+import { exportPlan } from "@/lib/excel";
 import {
   Truck,
   ArrowsClockwise,
@@ -21,9 +22,6 @@ import {
   Spinner,
   CloudArrowDown,
 } from "@phosphor-icons/react";
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
 
 function TabButton({ active, onClick, testid, children }) {
   return (
@@ -248,94 +246,37 @@ function ReturnsTable({ returns }) {
 }
 
 function App() {
+  const { store, meta, sheetUrl, setSheetUrl, syncing, sync } = useData();
   const [planDate, setPlanDate] = useState(todayISO());
-  const [syncMeta, setSyncMeta] = useState(null);
-  const [sheetUrl, setSheetUrl] = useState("");
   const [showSync, setShowSync] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [plan, setPlan] = useState(null);
-  const [loadingPlan, setLoadingPlan] = useState(false);
   const [activeHub, setActiveHub] = useState(null);
   const [view, setView] = useState("plan");
 
-  const downloadFile = (url, name) => {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = name || "";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  };
+  const synced = !!meta?.synced;
+  const syncMeta = meta;
+  const loadingPlan = syncing && !synced;
 
-  const loadStatus = useCallback(async () => {
-    try {
-      const { data } = await axios.get(`${API}/sync/status`);
-      setSyncMeta(data);
-      setSheetUrl(data.sheet_url || "");
-      if (!data.synced) setShowSync(true);
-    } catch (e) {
-      console.error(e);
-    }
-  }, []);
-
-  const loadPlan = useCallback(async (date) => {
-    setLoadingPlan(true);
-    try {
-      const { data } = await axios.get(`${API}/plan`, { params: { date } });
-      setPlan(data);
-      setActiveHub((prev) => {
-        if (prev && data.hubs.some((h) => h.hub_name === prev)) return prev;
-        return data.hubs.length ? data.hubs[0].hub_name : null;
-      });
-    } catch (e) {
-      console.error(e);
-      toast.error("Could not load plan");
-    } finally {
-      setLoadingPlan(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadStatus();
-  }, [loadStatus]);
-
-  useEffect(() => {
-    if (syncMeta?.synced) loadPlan(planDate);
-  }, [planDate, syncMeta?.synced, syncMeta?.synced_at, loadPlan]);
+  const plan = useMemo(
+    () => (synced ? buildPlan(store, planDate) : null),
+    [synced, store, planDate]
+  );
 
   const doSync = async () => {
-    setSyncing(true);
-    toast.info("Syncing data from Google Sheet… this can take up to a minute.");
     try {
-      const { data } = await axios.post(`${API}/sync`, { sheet_url: sheetUrl || undefined });
-      const meta = { ...data, synced: true };
-      setSyncMeta(meta);
+      await sync();
       setShowSync(false);
-      toast.success(
-        `Synced ${data.orders_count} orders & ${data.returns_count} pending returns.`
-      );
-      await loadPlan(planDate);
     } catch (e) {
-      console.error(e);
-      toast.error(e?.response?.data?.detail || "Sync failed");
-    } finally {
-      setSyncing(false);
+      /* handled in context */
     }
   };
 
-  const downloadAll = () =>
-    downloadFile(
-      `${API}/plan/export?date=${planDate}`,
-      `last_mile_plan_${planDate}.xlsx`
-    );
+  const downloadAll = () => plan && exportPlan(plan);
+  const downloadHub = (hub) => plan && exportPlan(plan, hub);
 
-  const downloadHub = (hub) =>
-    downloadFile(
-      `${API}/plan/export/hub?hub=${encodeURIComponent(hub)}&date=${planDate}`,
-      `plan_${hub}_${planDate}.xlsx`
-    );
-
-  const current = plan?.hubs?.find((h) => h.hub_name === activeHub) || null;
+  const current = useMemo(() => {
+    if (!plan || !plan.hubs.length) return null;
+    return plan.hubs.find((h) => h.hub_name === activeHub) || plan.hubs[0];
+  }, [plan, activeHub]);
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900">
@@ -367,7 +308,7 @@ function App() {
                     Last synced {fmtDateTime(syncMeta.synced_at)}
                   </span>
                   <span className="text-[11px] text-zinc-500 font-mono">
-                    {syncMeta.orders_count} orders · {syncMeta.returns_count} returns · auto every 15 min
+                    {syncMeta.orders_count} orders · {syncMeta.returns_count} returns · auto every 5 min
                   </span>
                 </>
               ) : (
@@ -442,19 +383,19 @@ function App() {
         )}
 
         {syncMeta?.synced && view === "confirm" && (
-          <ConfirmationView downloadFile={downloadFile} />
+          <ConfirmationView />
         )}
 
         {syncMeta?.synced && view === "returns" && (
-          <ReturnConfirmationView downloadFile={downloadFile} />
+          <ReturnConfirmationView />
         )}
 
         {syncMeta?.synced && view === "unalloc" && (
-          <UnallocatableView downloadFile={downloadFile} />
+          <UnallocatableView />
         )}
 
         {syncMeta?.synced && view === "pickup" && (
-          <PickupPlanView downloadFile={downloadFile} />
+          <PickupPlanView />
         )}
 
         {/* Controls */}
@@ -510,6 +451,13 @@ function App() {
             <DownloadSimple size={18} weight="bold" /> Download All Hubs (Excel)
           </button>
         </div>
+        )}
+
+        {/* Initial load */}
+        {!syncMeta?.synced && syncing && (
+          <div className="bg-white border border-zinc-200 rounded-sm p-16 flex items-center justify-center text-zinc-400 gap-2" data-testid="initial-loading">
+            <Spinner size={20} className="animate-spin" /> Reading data from Google Sheet…
+          </div>
         )}
 
         {/* Not synced prompt */}

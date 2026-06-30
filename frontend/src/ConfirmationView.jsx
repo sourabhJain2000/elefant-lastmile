@@ -1,6 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
-import axios from "axios";
-import { toast } from "sonner";
+import { useMemo, useState } from "react";
 import {
   Buildings,
   DownloadSimple,
@@ -9,9 +7,9 @@ import {
   PaperPlaneTilt,
   CalendarBlank,
 } from "@phosphor-icons/react";
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { useData } from "@/lib/DataContext";
+import { buildConfirmation } from "@/lib/plans";
+import { exportConfirmation } from "@/lib/excel";
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -85,39 +83,21 @@ function Kpi({ icon, label, value, accent }) {
   );
 }
 
-export default function ConfirmationView({ downloadFile }) {
-  const [conf, setConf] = useState(null);
-  const [loading, setLoading] = useState(true);
+export default function ConfirmationView() {
+  const { store } = useData();
   const [activeHub, setActiveHub] = useState(null);
   const [planDate, setPlanDate] = useState(todayISO());
 
-  const load = useCallback(async (date) => {
-    setLoading(true);
-    try {
-      const { data } = await axios.get(`${API}/confirmation`, { params: { date } });
-      setConf(data);
-      setActiveHub((prev) => {
-        if (prev && data.hubs.some((h) => h.hub_name === prev)) return prev;
-        return data.hubs.length ? data.hubs[0].hub_name : null;
-      });
-    } catch (e) {
-      console.error(e);
-      toast.error("Could not load confirmation plan");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const conf = useMemo(() => buildConfirmation(store, planDate), [store, planDate]);
+  const loading = false;
 
-  useEffect(() => {
-    load(planDate);
-  }, [load, planDate]);
+  const current = useMemo(() => {
+    if (!conf || !conf.hubs.length) return null;
+    return conf.hubs.find((h) => h.hub_name === activeHub) || conf.hubs[0];
+  }, [conf, activeHub]);
 
-  const current = conf?.hubs?.find((h) => h.hub_name === activeHub) || null;
-
-  const downloadAll = () =>
-    downloadFile(`${API}/confirmation/export?date=${planDate}`, "order_confirmation_plan.xlsx");
-  const downloadHub = (hub) =>
-    downloadFile(`${API}/confirmation/export/hub?hub=${encodeURIComponent(hub)}&date=${planDate}`, `confirmation_${hub}.xlsx`);
+  const downloadAll = () => exportConfirmation(conf);
+  const downloadHub = (hub) => exportConfirmation(conf, hub);
 
   return (
     <div className="flex flex-col gap-6">

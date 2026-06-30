@@ -1,10 +1,8 @@
-import { useEffect, useState, useCallback } from "react";
-import axios from "axios";
-import { toast } from "sonner";
+import { useMemo, useState } from "react";
 import { DownloadSimple, Spinner, WarningOctagon, CalendarBlank, X } from "@phosphor-icons/react";
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { useData } from "@/lib/DataContext";
+import { buildUnallocatable } from "@/lib/plans";
+import { exportUnallocatable } from "@/lib/excel";
 
 const fmtDate = (iso) => {
   if (!iso) return "—";
@@ -24,31 +22,14 @@ const TD = ({ children, mono }) => (
   </td>
 );
 
-export default function UnallocatableView({ downloadFile }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+export default function UnallocatableView() {
+  const { store } = useData();
   const [date, setDate] = useState("");
 
-  const load = useCallback(async (d) => {
-    setLoading(true);
-    try {
-      const params = d ? { date: d } : {};
-      const { data } = await axios.get(`${API}/unallocatable`, { params });
-      setData(data);
-    } catch (e) {
-      console.error(e);
-      toast.error("Could not load unallocatable orders");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load(date);
-  }, [load, date]);
+  const data = useMemo(() => buildUnallocatable(store, date || null), [store, date]);
+  const loading = false;
 
   const orders = data?.orders || [];
-  const exportUrl = `${API}/unallocatable/export${date ? `?date=${date}` : ""}`;
 
   return (
     <div className="flex flex-col gap-6">
@@ -61,7 +42,7 @@ export default function UnallocatableView({ downloadFile }) {
           </p>
         </div>
         <button
-          onClick={() => downloadFile(exportUrl, "unallocatable_orders.xlsx")}
+          onClick={() => exportUnallocatable(data)}
           disabled={!orders.length}
           className="sm:ml-auto inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-sm px-4 py-2.5 text-sm font-medium transition-colors"
           data-testid="unalloc-download-btn"

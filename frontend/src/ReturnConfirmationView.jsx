@@ -1,10 +1,8 @@
-import { useEffect, useState, useCallback } from "react";
-import axios from "axios";
-import { toast } from "sonner";
+import { useMemo } from "react";
 import { DownloadSimple, Spinner, ArrowUUpLeft, ListChecks } from "@phosphor-icons/react";
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { useData } from "@/lib/DataContext";
+import { buildReturnConfirmation } from "@/lib/plans";
+import { exportReturnConfirmation } from "@/lib/excel";
 
 function ReturnStatusBadge({ status }) {
   const s = (status || "").toUpperCase();
@@ -29,26 +27,10 @@ const TD = ({ children, mono }) => (
   </td>
 );
 
-export default function ReturnConfirmationView({ downloadFile }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const { data } = await axios.get(`${API}/return-confirmation`);
-      setData(data);
-    } catch (e) {
-      console.error(e);
-      toast.error("Could not load return confirmation list");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+export default function ReturnConfirmationView() {
+  const { store } = useData();
+  const data = useMemo(() => buildReturnConfirmation(store), [store]);
+  const loading = false;
 
   const orders = data?.orders || [];
 
@@ -63,7 +45,7 @@ export default function ReturnConfirmationView({ downloadFile }) {
           </p>
         </div>
         <button
-          onClick={() => downloadFile(`${API}/return-confirmation/export`, "confirm_via_returns.xlsx")}
+          onClick={() => exportReturnConfirmation(data)}
           disabled={!orders.length}
           className="sm:ml-auto inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-sm px-4 py-2.5 text-sm font-medium transition-colors"
           data-testid="rc-download-btn"
